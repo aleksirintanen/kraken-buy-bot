@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: kraken-bot
+    environment:
+      - KRAKEN_API_KEY=${KRAKEN_API_KEY}
+      - KRAKEN_API_SECRET=${KRAKEN_API_SECRET}
+      - TZ=UTC
+    volumes:
+      - ./bot_state.json:/app/bot_state.json
+    restart: unless-stopped 
