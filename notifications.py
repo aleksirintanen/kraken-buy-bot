@@ -8,6 +8,7 @@ from telegram.error import TelegramError, BadRequest
 from config import NOTIFICATION_CONFIG
 import asyncio
 import threading
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -131,23 +132,52 @@ class NotificationManager:
             # Import here to avoid circular import
             from bot import kraken, DRY_RUN, TEST_MODE
             
-            balance = kraken.fetch_balance()
-            eur_balance = balance['total'].get('EUR', 0)
-            btc_balance = balance['total'].get('BTC', 0)
+            # Send initial response
+            update.message.reply_text("🔄 Fetching status and balances...")
             
-            mode = "DRY RUN" if DRY_RUN else "TEST MODE" if TEST_MODE else "LIVE"
-            status_msg = (
-                f"🤖 Bot Status:\n\n"
-                f"Mode: {mode}\n"
-                f"EUR Balance: {eur_balance:.2f} EUR\n"
-                f"BTC Balance: {btc_balance:.8f} BTC\n"
-                f"Bot Status: {'Initialized' if self.initialized else 'Initializing...'}"
-            )
-            update.message.reply_text(status_msg)
+            try:
+                # Fetch balance with timeout
+                balance = kraken.fetch_balance()
+                eur_balance = balance.get('total', {}).get('EUR', 0)
+                btc_balance = balance.get('total', {}).get('BTC', 0)
+                
+                # Get current price
+                ticker = kraken.fetch_ticker('BTC/EUR')
+                current_price = ticker.get('last', 0)
+                
+                mode = "DRY RUN" if DRY_RUN else "TEST MODE" if TEST_MODE else "LIVE"
+                status_msg = (
+                    f"🤖 Bot Status:\n\n"
+                    f"Mode: {mode}\n"
+                    f"Current BTC Price: {current_price:.2f} EUR\n"
+                    f"EUR Balance: {eur_balance:.2f} EUR\n"
+                    f"BTC Balance: {btc_balance:.8f} BTC\n"
+                    f"Total Value: {(eur_balance + btc_balance * current_price):.2f} EUR\n"
+                    f"Bot Status: {'Initialized' if self.initialized else 'Initializing...'}\n"
+                    f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                update.message.reply_text(status_msg)
+                logger.info("Status command executed successfully")
+                
+            except Exception as e:
+                error_msg = f"❌ Error fetching balances: {str(e)}"
+                logger.error(error_msg)
+                # Send a more detailed error message
+                update.message.reply_text(
+                    f"❌ Error fetching balances:\n"
+                    f"Error: {str(e)}\n\n"
+                    f"Bot is still running in {mode} mode.\n"
+                    f"Please try again in a few moments."
+                )
+                
         except Exception as e:
-            error_msg = f"❌ Error fetching status: {str(e)}"
+            error_msg = f"❌ Error in status command: {str(e)}"
             logger.error(error_msg)
-            update.message.reply_text(error_msg)
+            update.message.reply_text(
+                f"❌ Error executing status command:\n"
+                f"Error: {str(e)}\n\n"
+                f"Please try again in a few moments."
+            )
 
     async def send_notification(self, message, level="INFO"):
         """Send notification through all enabled channels"""
