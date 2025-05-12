@@ -7,6 +7,7 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 from telegram.error import TelegramError, BadRequest
 from config import NOTIFICATION_CONFIG
 import asyncio
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,16 @@ class NotificationManager:
         self.telegram_bot = None
         self.initialized = False
         self.updater = None
+        self._polling_thread = None
+
+    def _start_polling(self):
+        """Start polling in a separate thread"""
+        try:
+            logger.info("Starting Telegram bot polling...")
+            self.updater.start_polling(drop_pending_updates=True)
+            logger.info("Telegram bot polling started successfully")
+        except Exception as e:
+            logger.error(f"Error in polling thread: {e}")
 
     async def initialize(self):
         """Initialize the Telegram bot asynchronously"""
@@ -55,8 +66,9 @@ class NotificationManager:
                     )
                     logger.info("Successfully verified chat access")
                     
-                    # Start the bot in the background
-                    self.updater.start_polling()
+                    # Start polling in a separate thread
+                    self._polling_thread = threading.Thread(target=self._start_polling, daemon=True)
+                    self._polling_thread.start()
                     
                 except BadRequest as e:
                     if "chat not found" in str(e).lower():
@@ -74,6 +86,7 @@ class NotificationManager:
                     return
                 
                 self.initialized = True
+                logger.info("Telegram bot initialization completed successfully")
             except TelegramError as e:
                 logger.error(f"Failed to initialize Telegram bot: {e}")
             except Exception as e:
@@ -83,6 +96,10 @@ class NotificationManager:
 
     def handle_buy_command(self, update: Update, context: CallbackContext):
         """Handle the /buy command"""
+        if not self.initialized:
+            update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
+            return
+
         if str(update.effective_chat.id) != str(NOTIFICATION_CONFIG['telegram_chat_id']):
             update.message.reply_text("❌ Unauthorized access. This bot is private.")
             return
@@ -102,6 +119,10 @@ class NotificationManager:
 
     def handle_status_command(self, update: Update, context: CallbackContext):
         """Handle the /status command"""
+        if not self.initialized:
+            update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
+            return
+
         if str(update.effective_chat.id) != str(NOTIFICATION_CONFIG['telegram_chat_id']):
             update.message.reply_text("❌ Unauthorized access. This bot is private.")
             return
@@ -119,7 +140,8 @@ class NotificationManager:
                 f"🤖 Bot Status:\n\n"
                 f"Mode: {mode}\n"
                 f"EUR Balance: {eur_balance:.2f} EUR\n"
-                f"BTC Balance: {btc_balance:.8f} BTC"
+                f"BTC Balance: {btc_balance:.8f} BTC\n"
+                f"Bot Status: {'Initialized' if self.initialized else 'Initializing...'}"
             )
             update.message.reply_text(status_msg)
         except Exception as e:
