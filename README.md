@@ -1,77 +1,44 @@
-# Kraken Auto-Buy Bot
+# Kraken Buy Bot
 
-A Python bot that automatically buys Bitcoin on Kraken exchange using a scheduled strategy. The bot attempts to buy BTC every Monday at 2 AM UTC, with a fallback attempt on Sunday at 2 AM UTC if the Monday attempt is unsuccessful.
+A Python bot that automatically places limit buy orders for Bitcoin on Kraken exchange. The bot runs on a schedule, attempting to buy BTC on Monday mornings with a fallback to Sunday if the Monday attempt fails.
 
 ## Features
 
-- Scheduled buying on Monday 2 AM UTC with Sunday fallback
-- Configurable minimum BTC amount
-- Dry-run mode for testing without real orders
-- Test mode for one-time real purchase with minimum amount
-- State persistence across restarts
+- Scheduled buying on Monday 02:00 UTC with Sunday fallback
+- Configurable dry run mode for testing
+- Test mode for one-time real purchases with minimum amount
+- Persistent state tracking between runs
 - Docker support for easy deployment
 
 ## Prerequisites
 
-- Python 3.11 or higher
-- Kraken API key with trading permissions
-- Docker (optional, for containerized deployment)
+- Python 3.8 or higher
+- Docker and Docker Compose (for containerized deployment)
+- Kraken API credentials with trading permissions
 
 ## Setup
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/kraken-auto-buy-bot.git
-cd kraken-auto-buy-bot
+git clone https://github.com/yourusername/kraken-buy-bot.git
+cd kraken-buy-bot
 ```
 
-2. Create a virtual environment and install dependencies:
+2. Create a `.env` file:
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
+cp .env.example .env
 ```
 
-3. Create a `.env` file with your Kraken API credentials:
-```bash
+3. Edit `.env` and add your Kraken API credentials:
+```
 KRAKEN_API_KEY=your_api_key_here
 KRAKEN_API_SECRET=your_api_secret_here
+DRY_RUN=False
+TEST_MODE=False
+TZ=UTC
 ```
 
-## Configuration
-
-The bot has three modes that can be configured in `bot.py`:
-
-1. **Normal Mode** (`DRY_RUN = False, TEST_MODE = False`):
-   - Runs scheduled trades every Monday at 2 AM UTC
-   - Falls back to Sunday at 2 AM UTC if Monday's attempt fails
-   - Uses 20% of available EUR balance
-
-2. **Dry Run Mode** (`DRY_RUN = True`):
-   - Simulates trading without placing real orders
-   - Checks real market prices to simulate success/failure
-   - Runs once and exits
-
-3. **Test Mode** (`TEST_MODE = True`):
-   - Makes one real purchase with minimum BTC amount (0.00005 BTC)
-   - Useful for testing API connectivity and order placement
-   - Exits after successful purchase or max retries
-
-## Usage
-
-### Running Locally
-
-1. Activate the virtual environment:
-```bash
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-2. Run the bot:
-```bash
-python bot.py
-```
-
-### Running with Docker
+## Running with Docker
 
 1. Build and start the container:
 ```bash
@@ -88,19 +55,45 @@ docker-compose logs -f
 docker-compose down
 ```
 
+## Running Locally
+
+1. Create a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+3. Run the bot:
+```bash
+python bot.py
+```
+
+## Configuration
+
+- `DRY_RUN`: Set to `True` to simulate trades without actually placing orders
+- `TEST_MODE`: Set to `True` for a one-time real purchase with minimum amount
+- `TZ`: Timezone for the bot (defaults to UTC)
+
 ## State Management
 
-The bot maintains its state in `bot_state.json` to track whether Monday's attempt was successful. This state persists across restarts and is used to determine if the Sunday fallback should run.
+The bot maintains its state in `bot_state.json`, which tracks whether the Monday attempt was successful. This file is persisted between runs when using Docker.
 
-## Safety Features
+## Logging
 
-- Minimum BTC amount check (0.00005 BTC)
-- Dry-run mode for testing
-- Test mode for small real purchases
-- State persistence to prevent duplicate orders
-- 5-minute timeout for unfilled orders
+Logs are printed to stdout and can be viewed using Docker logs or redirected to a file when running locally.
 
+## Security Notes
 
-## Disclaimer
+- Never commit your `.env` file or expose your API credentials
+- The bot uses 20% of your EUR balance for each purchase (configurable in the code)
+- Always test with `DRY_RUN=True` first
+- Consider using API keys with trading-only permissions
 
-This bot is for educational purposes only. Use at your own risk. Cryptocurrency trading involves significant risk and you should never invest more than you can afford to lose. 
+## License
+
+MIT License 

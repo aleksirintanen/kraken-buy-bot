@@ -4,10 +4,22 @@ services:
   bot:
     build: .
     container_name: kraken-bot
+    env_file:
+      - .env
     environment:
-      - KRAKEN_API_KEY=${KRAKEN_API_KEY}
-      - KRAKEN_API_SECRET=${KRAKEN_API_SECRET}
       - TZ=UTC
     volumes:
       - ./bot_state.json:/app/bot_state.json
-    restart: unless-stopped 
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; assert os.path.exists('bot_state.json')"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3" 

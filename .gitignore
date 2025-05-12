@@ -1,3 +1,7 @@
+# Environment variables
+.env
+.env.*
+
 # Python
 __pycache__/
 *.py[cod]
@@ -21,14 +25,7 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
-venv/
-ENV/
-
-# Environment variables
-.env
-
-# Bot state
+# State files
 bot_state.json
 
 # IDE
@@ -36,6 +33,14 @@ bot_state.json
 .vscode/
 *.swp
 *.swo
+
+# Logs
+*.log
+logs/
+
+# Virtual Environment
+venv/
+ENV/
 
 # OS
 .DS_Store

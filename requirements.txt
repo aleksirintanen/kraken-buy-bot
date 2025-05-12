@@ -1,2 +1,7 @@
-ccxt>=4.1.13
-schedule>=1.2.1
+ccxt==4.1.13
+schedule==1.2.1
+python-telegram-bot==13.7
+python-dotenv==1.0.0
+requests==2.31.0
+pytz==2024.1
+prometheus-client==0.19.0
