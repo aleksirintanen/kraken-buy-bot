@@ -122,7 +122,7 @@ async def place_limit_order():
 
         # Get current balance
         balance = kraken.fetch_balance()
-        usdc_balance = balance['total'].get('USDC', 0)
+        usdc_balance = balance['total'].get('USDC.F', 0)
         btc_balance = balance['total'].get('BTC', 0)
         
         # Update metrics
@@ -286,6 +286,7 @@ if DRY_RUN:
     log_action("Starting in DRY RUN mode - will simulate trading without placing real orders", "SUCCESS")
     log_action(f"Trading pair: {TRADING_CONFIG['symbol']}")
     log_action(f"Minimum BTC amount: {TRADING_CONFIG['min_btc_amount']}")
+
     
     # Schedule primary attempt for Monday
     schedule.every().monday.at(SCHEDULE_CONFIG['monday_time']).do(place_monday_order)
