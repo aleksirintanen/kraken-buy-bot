@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 DRY_RUN = os.getenv('DRY_RUN', 'False').lower() == 'true'
-TEST_MODE = os.getenv('TEST_MODE', 'False').lower() == 'true'
 STATE_FILE = 'bot_state.json'
 
 # Global event loop
@@ -54,8 +53,6 @@ def log_action(message, level="INFO"):
     """Helper function to log actions and send notifications"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     mode = "[DRY RUN]" if DRY_RUN else "[LIVE]"
-    if TEST_MODE:
-        mode = "[TEST MODE]"
     log_message = f"{timestamp} {mode} {message}"
     
     # Log to file and console
@@ -118,99 +115,83 @@ kraken = ccxt.kraken({
 })
 
 async def place_limit_order():
-    """Place a limit buy order with retries"""
-    global monday_attempt_successful
-    start_time = time.time()
-    
+    """Place a limit order to buy BTC"""
     try:
-        # Fetch balance
+        metrics_manager.record_order_attempt()
+        start_time = time.time()
+
+        # Get current balance
         balance = kraken.fetch_balance()
-        eur_balance = balance['total'].get('EUR', 0)
+        usdc_balance = balance['total'].get('USDC', 0)
         btc_balance = balance['total'].get('BTC', 0)
         
         # Update metrics
-        metrics_manager.update_balances(eur_balance, btc_balance)
-        metrics_manager.record_order_attempt()
+        metrics_manager.update_balances(usdc_balance, btc_balance)
         
-        log_action(f"Current EUR balance: {eur_balance:.2f}")
+        # Log current balance
+        log_action(f"Current USDC balance: {usdc_balance:.2f}")
         log_action(f"Current BTC balance: {btc_balance:.8f}")
-
+        
+        if usdc_balance < 10:  # Minimum 10 USDC required
+            log_action("Insufficient USDC balance for trading")
+            return
+        
         # Calculate amount to use
-        if TEST_MODE:
-            btc_amount = TRADING_CONFIG['min_btc_amount']
-            log_action(f"TEST MODE: Will buy exactly {btc_amount:.8f} BTC")
-        else:
-            eur_to_use = eur_balance * TRADING_CONFIG['balance_percentage']
-            log_action(f"Planning to use {eur_to_use:.2f} EUR ({TRADING_CONFIG['balance_percentage']*100}% of balance)")
-
-        for attempt in range(TRADING_CONFIG['max_retries']):
-            # Fetch order book and get level 3 bid price
-            order_book = kraken.fetch_order_book(TRADING_CONFIG['symbol'])
-            if len(order_book['bids']) < 3:
-                log_action("Not enough bid levels in the order book.", "WARNING")
-                return
+        usdc_to_use = usdc_balance * TRADING_CONFIG['balance_percentage']
+        log_action(f"Planning to use {usdc_to_use:.2f} USDC ({TRADING_CONFIG['balance_percentage']*100}% of balance)")
+        
+        # Get current order book
+        order_book = kraken.fetch_order_book(TRADING_CONFIG['symbol'], limit=3)
+        if not order_book or not order_book['bids']:
+            log_action("No bids available in order book")
+            return
             
-            bid_price = order_book['bids'][2][0]
-            log_action(f"Current level 3 bid price: {bid_price:.2f} EUR")
-
-            # Calculate BTC amount to buy (only in non-test mode)
-            if not TEST_MODE:
-                btc_amount = eur_to_use / bid_price
-                log_action(f"Would buy {btc_amount:.8f} BTC")
-
-            # Check if BTC amount is above minimum (only in non-test mode)
-            if not TEST_MODE and btc_amount < TRADING_CONFIG['min_btc_amount']:
+        # Get the best bid price (highest price someone is willing to buy at)
+        bid_price = order_book['bids'][0][0]
+        log_action(f"Current level 3 bid price: {bid_price:.2f} USDC")
+        
+        # Calculate BTC amount to buy
+        btc_amount = usdc_to_use / bid_price
+        
+        if btc_amount < TRADING_CONFIG['min_btc_amount']:
+            log_action(f"Calculated BTC amount {btc_amount:.8f} is below minimum {TRADING_CONFIG['min_btc_amount']}")
+            return
+            
+        # Place the order
+        if DRY_RUN:
+            current_price = order_book['bids'][0][0]
+            if current_price <= bid_price:
                 log_action(
-                    f"BTC amount {btc_amount:.8f} is below the minimum threshold of {TRADING_CONFIG['min_btc_amount']}. Skipping order.",
+                    f"SIMULATED: Current price {current_price:.2f} USDC is lower than our bid {bid_price:.2f} USDC",
+                    "SUCCESS"
+                )
+                metrics_manager.record_order_success(btc_amount, bid_price, time.time() - start_time)
+            else:
+                log_action(
+                    f"SIMULATED: Current price {current_price:.2f} USDC is higher than our bid {bid_price:.2f} USDC",
                     "WARNING"
                 )
+                metrics_manager.record_order_failure()
+        else:
+            # Place limit buy order
+            order = kraken.create_limit_buy_order(TRADING_CONFIG['symbol'], btc_amount, bid_price)
+            log_action(f"Limit buy order placed: {order}")
+
+            # Wait for order timeout
+            time.sleep(TRADING_CONFIG['order_timeout_minutes'] * 60)
+
+            # Check order status
+            order_status = kraken.fetch_order(order['id'])
+            if order_status['status'] == 'closed':
+                log_action(f"Order {order['id']} filled successfully.", "SUCCESS")
+                monday_attempt_successful = True
+                save_state({'monday_attempt_successful': True})
+                metrics_manager.record_order_success(btc_amount, bid_price, time.time() - start_time)
                 return
-
-            if DRY_RUN:
-                # In dry run, check if current price is lower than our bid
-                current_price = order_book['bids'][0][0]
-                if current_price <= bid_price:
-                    log_action(
-                        f"SIMULATED: Current price {current_price:.2f} EUR is lower than our bid {bid_price:.2f} EUR",
-                        "SUCCESS"
-                    )
-                    monday_attempt_successful = True
-                    save_state({'monday_attempt_successful': True})
-                    metrics_manager.record_order_success(btc_amount, bid_price, time.time() - start_time)
-                    return
-                else:
-                    log_action(
-                        f"SIMULATED: Current price {current_price:.2f} EUR is higher than our bid {bid_price:.2f} EUR",
-                        "WARNING"
-                    )
-                    time.sleep(TRADING_CONFIG['retry_delay_seconds'])
             else:
-                # Place limit buy order
-                order = kraken.create_limit_buy_order(TRADING_CONFIG['symbol'], btc_amount, bid_price)
-                log_action(f"Limit buy order placed: {order}")
-
-                # Wait for order timeout
-                time.sleep(TRADING_CONFIG['order_timeout_minutes'] * 60)
-
-                # Check order status
-                order_status = kraken.fetch_order(order['id'])
-                if order_status['status'] == 'closed':
-                    log_action(f"Order {order['id']} filled successfully.", "SUCCESS")
-                    monday_attempt_successful = True
-                    save_state({'monday_attempt_successful': True})
-                    metrics_manager.record_order_success(btc_amount, bid_price, time.time() - start_time)
-                    
-                    if TEST_MODE:
-                        log_action("Test purchase completed successfully. Exiting...", "SUCCESS")
-                        exit(0)
-                    return
-                else:
-                    kraken.cancel_order(order['id'])
-                    log_action(f"Order {order['id']} not filled in {TRADING_CONFIG['order_timeout_minutes']} minutes. Cancelled. Retrying...", "WARNING")
-                    metrics_manager.record_order_failure()
-
-        log_action("Max retries reached. Will try again next week.", "WARNING")
-        metrics_manager.record_order_failure()
+                kraken.cancel_order(order['id'])
+                log_action(f"Order {order['id']} not filled in {TRADING_CONFIG['order_timeout_minutes']} minutes. Cancelled. Retrying...", "WARNING")
+                metrics_manager.record_order_failure()
 
     except Exception as e:
         log_action(f"An error occurred: {e}", "ERROR")
@@ -237,19 +218,87 @@ def place_sunday_order():
     else:
         log_action("Monday attempt was successful, skipping Sunday fallback")
 
+async def convert_eur_to_usdc():
+    """Convert EUR balance to USDC if available"""
+    try:
+        # Get current balance
+        balance = kraken.fetch_balance()
+        eur_balance = balance['total'].get('EUR', 0)
+        
+        if eur_balance < 10:  # Minimum 10 EUR required for conversion
+            logger.debug(f"Insufficient EUR balance for conversion: {eur_balance:.2f} EUR")
+            return
+            
+        log_action(f"Found EUR balance: {eur_balance:.2f} EUR")
+        
+        # Get current EUR/USDC price
+        try:
+            ticker = kraken.fetch_ticker('EUR/USDC')
+            eur_usdc_price = ticker.get('last', 0)
+            if not eur_usdc_price:
+                log_action("Could not fetch EUR/USDC price", "WARNING")
+                return
+                
+            log_action(f"Current EUR/USDC price: {eur_usdc_price:.4f}")
+            
+            # Calculate USDC amount we would get
+            usdc_amount = eur_balance * eur_usdc_price
+            
+            if DRY_RUN:
+                log_action(
+                    f"SIMULATED: Would convert {eur_balance:.2f} EUR to {usdc_amount:.2f} USDC",
+                    "SUCCESS"
+                )
+                return
+                
+            # Place market sell order for EUR/USDC
+            try:
+                order = kraken.create_market_sell_order('EUR/USDC', eur_balance)
+                log_action(
+                    f"Successfully converted {eur_balance:.2f} EUR to {usdc_amount:.2f} USDC",
+                    "SUCCESS"
+                )
+                # Send notification
+                await send_notification_async(
+                    f"✅ Converted {eur_balance:.2f} EUR to {usdc_amount:.2f} USDC\n"
+                    f"Rate: 1 EUR = {eur_usdc_price:.4f} USDC",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_action(f"Failed to convert EUR to USDC: {str(e)}", "ERROR")
+                await send_notification_async(
+                    f"❌ Failed to convert EUR to USDC: {str(e)}",
+                    "ERROR"
+                )
+                
+        except Exception as e:
+            log_action(f"Error fetching EUR/USDC price: {str(e)}", "ERROR")
+            
+    except Exception as e:
+        log_action(f"Error in EUR to USDC conversion: {str(e)}", "ERROR")
+
+def check_eur_balance():
+    """Wrapper function to run EUR to USDC conversion"""
+    run_async(convert_eur_to_usdc())
+
 # Handle different modes
-if TEST_MODE:
-    log_action("Starting in TEST MODE - will attempt one real purchase with minimum amount", "SUCCESS")
-    log_action(f"Trading pair: {TRADING_CONFIG['symbol']}")
-    log_action(f"Minimum BTC amount: {TRADING_CONFIG['min_btc_amount']}")
-    run_async(place_limit_order())
-elif DRY_RUN:
+if DRY_RUN:
     log_action("Starting in DRY RUN mode - will simulate trading without placing real orders", "SUCCESS")
     log_action(f"Trading pair: {TRADING_CONFIG['symbol']}")
     log_action(f"Minimum BTC amount: {TRADING_CONFIG['min_btc_amount']}")
-    run_async(place_limit_order())
-    log_action("Dry run completed - exiting", "SUCCESS")
-    exit(0)
+    
+    # Schedule primary attempt for Monday
+    schedule.every().monday.at(SCHEDULE_CONFIG['monday_time']).do(place_monday_order)
+    
+    # Schedule fallback attempt for Sunday
+    schedule.every().sunday.at(SCHEDULE_CONFIG['sunday_time']).do(place_sunday_order)
+    
+    # Schedule EUR to USDC conversion check every hour
+    schedule.every().hour.do(check_eur_balance)
+    
+    log_action(f"Scheduled to run on Monday {SCHEDULE_CONFIG['monday_time']} {SCHEDULE_CONFIG['timezone']} with fallback to Sunday {SCHEDULE_CONFIG['sunday_time']} {SCHEDULE_CONFIG['timezone']}")
+    log_action("EUR to USDC conversion check scheduled every hour")
+    log_action(f"Current state: Monday attempt {'successful' if monday_attempt_successful else 'not successful'}")
 else:
     # Schedule primary attempt for Monday
     schedule.every().monday.at(SCHEDULE_CONFIG['monday_time']).do(place_monday_order)
@@ -257,20 +306,24 @@ else:
     # Schedule fallback attempt for Sunday
     schedule.every().sunday.at(SCHEDULE_CONFIG['sunday_time']).do(place_sunday_order)
     
+    # Schedule EUR to USDC conversion check every hour
+    schedule.every().hour.do(check_eur_balance)
+    
     log_action("Bot started in LIVE mode", "SUCCESS")
     log_action(f"Trading pair: {TRADING_CONFIG['symbol']}")
     log_action(f"Minimum BTC amount: {TRADING_CONFIG['min_btc_amount']}")
     log_action(f"Scheduled to run on Monday {SCHEDULE_CONFIG['monday_time']} {SCHEDULE_CONFIG['timezone']} with fallback to Sunday {SCHEDULE_CONFIG['sunday_time']} {SCHEDULE_CONFIG['timezone']}")
+    log_action("EUR to USDC conversion check scheduled every hour")
     log_action(f"Current state: Monday attempt {'successful' if monday_attempt_successful else 'not successful'}")
 
-    # Keep the script running
-    try:
-        while True:
-            schedule.run_pending()
-            loop = get_event_loop()
-            loop.run_until_complete(asyncio.sleep(1))
-    except KeyboardInterrupt:
-        log_action("Bot stopped by user", "WARNING")
-    finally:
-        if loop:
-            loop.close()
+# Keep the script running
+try:
+    while True:
+        schedule.run_pending()
+        loop = get_event_loop()
+        loop.run_until_complete(asyncio.sleep(1))
+except KeyboardInterrupt:
+    log_action("Bot stopped by user", "WARNING")
+finally:
+    if loop:
+        loop.close()

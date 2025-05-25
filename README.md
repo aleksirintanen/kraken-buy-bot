@@ -1,13 +1,16 @@
 # Kraken Buy Bot
 
-A Python bot that automatically places limit buy orders for Bitcoin on Kraken exchange. The bot runs on a schedule, attempting to buy BTC on Monday mornings with a fallback to Sunday if the Monday attempt fails.
+A Python bot that automatically places limit buy orders for Bitcoin on Kraken exchange using USDC. The bot runs on a schedule, attempting to buy BTC on Monday mornings with a fallback to Sunday if the Monday attempt fails.
 
 ## Features
 
-- Scheduled buying on Monday 02:00 UTC with Sunday fallback
-- Configurable dry run mode for testing
-- Test mode for one-time real purchases with minimum amount
-- Persistent state tracking between runs
+- Automated BTC purchases on Kraken exchange using USDC
+- Scheduled weekly purchases (Monday 02:00 UTC, with fallback to Sunday)
+- Configurable trading parameters
+- The bot uses 20% of your USDC balance for each purchase (configurable in the code)
+- Dry run mode for testing without actual trades
+- Telegram notifications for important events
+- Prometheus metrics for monitoring
 - Docker support for easy deployment
 
 ## Prerequisites
@@ -90,7 +93,7 @@ Logs are printed to stdout and can be viewed using Docker logs or redirected to 
 ## Security Notes
 
 - Never commit your `.env` file or expose your API credentials
-- The bot uses 20% of your EUR balance for each purchase (configurable in the code)
+- The bot uses 20% of your USDC balance for each purchase (configurable in the code)
 - Always test with `DRY_RUN=True` first
 - Consider using API keys with trading-only permissions
 
