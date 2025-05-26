@@ -25,6 +25,7 @@ class NotificationManager:
         self._stop_event = threading.Event()
         self._reconnect_delay = 5  # seconds to wait before reconnecting
         self._startup_notification_sent = False  # Track if startup notification was sent
+        self._loop = None  # Will be set when needed
 
     def _start_polling(self):
         """Start polling in a separate thread"""
@@ -177,28 +178,23 @@ class NotificationManager:
         logger.debug("Command cooldown passed, allowing command")
         return True
 
-    def handle_status_command(self, update: Update, context: CallbackContext):
+    def _get_loop(self):
+        """Get or create the event loop"""
+        if self._loop is None or self._loop.is_closed():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+        return self._loop
+
+    def handle_status_command(self, update, context):
         """Handle the /status command"""
         try:
-            logger.info(f"Status command received from chat ID: {update.effective_chat.id}")
-            
             if not self._check_command_cooldown():
-                logger.info("Command cooldown active, ignoring status command")
                 update.message.reply_text("⏳ Please wait a moment before sending another command.")
                 return
 
             if not self.initialized or not self.updater or not self.updater.running:
-                logger.warning(f"Status command received but bot not properly initialized. Initialized: {self.initialized}, Updater running: {self.updater and self.updater.running}")
+                logger.warning("Status command received but bot not properly initialized")
                 update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
-                # Try to reinitialize
-                logger.info("Attempting to reinitialize bot...")
-                asyncio.run(self.initialize())
-                if self.initialized and self.updater and self.updater.running:
-                    logger.info("Bot reinitialized successfully")
-                    update.message.reply_text("✅ Bot reinitialized. Please try the status command again.")
-                else:
-                    logger.error("Failed to reinitialize bot")
-                    update.message.reply_text("❌ Failed to reinitialize bot. Please try again later.")
                 return
 
             if str(update.effective_chat.id) != str(NOTIFICATION_CONFIG['telegram_chat_id']):
@@ -207,20 +203,21 @@ class NotificationManager:
                 return
 
             # Import here to avoid circular import
-            from bot import kraken, DRY_RUN, TEST_MODE
+            from shared import kraken, DRY_RUN
+
+            logger.info(f"Status command received from chat ID: {update.effective_chat.id}")
             
             # Send initial response
-            logger.info("Sending initial response for status command")
             update.message.reply_text("🔄 Fetching status and balances...")
             
             try:
                 logger.info("Fetching balance from Kraken...")
-                # Fetch balance with timeout
+                # Fetch balance
                 balance = kraken.fetch_balance()
                 logger.debug(f"Raw balance response: {balance}")
                 
-                usdc_balance = balance.get('total', {}).get('USDC', 0)
-                btc_balance = balance.get('total', {}).get('BTC', 0)
+                usdc_balance = balance.get('total', {}).get('USDC.F', 0)
+                btc_balance = balance.get('total', {}).get('XBT.F', 0)
                 logger.info(f"Retrieved balances - USDC: {usdc_balance}, BTC: {btc_balance}")
                 
                 logger.info("Fetching current BTC price...")
@@ -229,7 +226,7 @@ class NotificationManager:
                 current_price = ticker.get('last', 0)
                 logger.info(f"Current BTC price: {current_price}")
                 
-                mode = "DRY RUN" if DRY_RUN else "TEST MODE" if TEST_MODE else "LIVE"
+                mode = "DRY RUN" if DRY_RUN else "LIVE"
                 status_msg = (
                     f"🤖 Bot Status:\n\n"
                     f"Mode: {mode}\n"
@@ -247,7 +244,6 @@ class NotificationManager:
             except Exception as e:
                 error_msg = f"❌ Error fetching balances: {str(e)}"
                 logger.error(f"Error in status command: {error_msg}", exc_info=True)
-                # Send a more detailed error message
                 update.message.reply_text(
                     f"❌ Error fetching balances:\n"
                     f"Error: {str(e)}\n\n"

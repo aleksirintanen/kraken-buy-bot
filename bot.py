@@ -12,6 +12,7 @@ from functools import partial
 from config import TRADING_CONFIG, SCHEDULE_CONFIG
 from notifications import notification_manager
 from metrics import metrics_manager
+from shared import kraken, DRY_RUN  # Import from shared.py
 
 # Create logs directory if it doesn't exist
 Path("logs").mkdir(exist_ok=True)
@@ -28,7 +29,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-DRY_RUN = os.getenv('DRY_RUN', 'False').lower() == 'true'
 STATE_FILE = 'bot_state.json'
 
 # Global event loop
@@ -288,6 +288,7 @@ if DRY_RUN:
     log_action("Starting in DRY RUN mode - will simulate trading without placing real orders", "SUCCESS")
     log_action(f"Trading pair: {TRADING_CONFIG['symbol']}")
     log_action(f"Minimum BTC amount: {TRADING_CONFIG['min_btc_amount']}")
+    print("FDGDFGDFGDFGDFGGD")
 
     
     # Schedule primary attempt for Monday
