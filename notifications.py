@@ -26,6 +26,13 @@ class NotificationManager:
         self._reconnect_delay = 5  # seconds to wait before reconnecting
         self._startup_notification_sent = False  # Track if startup notification was sent
         self._loop = None  # Will be set when needed
+        self._pending_buy_confirmation = {}  # chat_id: (timestamp, command_type)
+        self._pending_eur_convert_confirmation = {}  # chat_id: (timestamp, amount)
+        self._buy_callback = None  # Callback for buy orders
+        self._buy_min_callback = None  # Callback for minimum buy orders
+        self._eur_convert_callback = None  # Callback for EUR conversion
+        self._scheduling_enabled = True  # Track if bot scheduling is enabled
+        self._scheduling_state_callback = None  # Callback to control bot scheduling
 
     def _start_polling(self):
         """Start polling in a separate thread"""
@@ -107,7 +114,13 @@ class NotificationManager:
             # Add command handlers
             dispatcher = self.updater.dispatcher
             dispatcher.add_handler(CommandHandler("buy", self.handle_buy_command))
+            dispatcher.add_handler(CommandHandler("buymin", self.handle_buy_min_command))
             dispatcher.add_handler(CommandHandler("status", self.handle_status_command))
+            dispatcher.add_handler(CommandHandler("confirm", self.handle_confirm_command))
+            dispatcher.add_handler(CommandHandler("confirm_eur", self.handle_eur_convert_confirm_command))
+            dispatcher.add_handler(CommandHandler("convert_eur", self.handle_convert_eur_command))
+            dispatcher.add_handler(CommandHandler("enable", self.handle_enable_command))
+            dispatcher.add_handler(CommandHandler("disable", self.handle_disable_command))
             
             # Test the connection and verify chat
             logger.info("Testing Telegram bot connection...")
@@ -120,7 +133,11 @@ class NotificationManager:
                     "🔔 Bot is starting up and testing notifications...\n\n"
                     "Available commands:\n"
                     "/buy - Trigger a manual buy order\n"
-                    "/status - Check bot status"
+                    "/buymin - Trigger a minimum BTC buy order\n"
+                    "/convert_eur [amount] - Convert EUR to USDC (optional amount)\n"
+                    "/status - Check bot status\n"
+                    "/enable - Enable bot scheduling\n"
+                    "/disable - Disable bot scheduling"
                 )
                 
                 if not self._startup_notification_sent:
@@ -218,22 +235,31 @@ class NotificationManager:
                 
                 usdc_balance = balance.get('total', {}).get('USDC.F', 0)
                 btc_balance = balance.get('total', {}).get('XBT.F', 0)
-                logger.info(f"Retrieved balances - USDC: {usdc_balance}, BTC: {btc_balance}")
+                eur_balance = balance.get('total', {}).get('EUR', 0)
+                logger.info(f"Retrieved balances - USDC: {usdc_balance}, BTC: {btc_balance}, EUR: {eur_balance}")
                 
                 logger.info("Fetching current BTC price...")
                 # Get current price
                 ticker = kraken.fetch_ticker('BTC/USDC')
                 current_price = ticker.get('last', 0)
                 logger.info(f"Current BTC price: {current_price}")
+
+                # Get EUR/USDC price for EUR value calculation
+                eur_ticker = kraken.fetch_ticker('USDC/EUR')
+                eur_usdc_price = eur_ticker.get('last', 0)
+                eur_value_usdc = eur_balance * eur_usdc_price if eur_usdc_price else 0
                 
                 mode = "DRY RUN" if DRY_RUN else "LIVE"
                 status_msg = (
                     f"🤖 Bot Status:\n\n"
                     f"Mode: {mode}\n"
-                    f"Current BTC Price: {current_price:.2f} USDC\n"
-                    f"USDC Balance: {usdc_balance:.2f} USDC\n"
-                    f"BTC Balance: {btc_balance:.8f} BTC\n"
-                    f"Total Value: {(usdc_balance + btc_balance * current_price):.2f} USDC\n"
+                    f"Scheduling: {'Enabled' if self._scheduling_enabled else 'Disabled'}\n"
+                    f"Current BTC Price: {current_price:.2f} USDC\n\n"
+                    f"Balances:\n"
+                    f"USDC: {usdc_balance:.2f} USDC\n"
+                    f"BTC: {btc_balance:.8f} BTC (≈ {btc_balance * current_price:.2f} USDC)\n"
+                    f"EUR: {eur_balance:.2f} EUR (≈ {eur_value_usdc:.2f} USDC)\n\n"
+                    f"Total Value: {(usdc_balance + btc_balance * current_price + eur_value_usdc):.2f} USDC\n"
                     f"Bot Status: {'Running' if self.updater and self.updater.running else 'Stopped'}\n"
                     f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
@@ -264,7 +290,8 @@ class NotificationManager:
                 logger.error(f"Failed to send error message: {reply_error}", exc_info=True)
 
     def handle_buy_command(self, update: Update, context: CallbackContext):
-        """Handle the /buy command"""
+        """Handle the /buy command with confirmation"""
+        chat_id = str(update.effective_chat.id)
         try:
             if not self._check_command_cooldown():
                 update.message.reply_text("⏳ Please wait a moment before sending another command.")
@@ -273,26 +300,99 @@ class NotificationManager:
             if not self.initialized or not self.updater or not self.updater.running:
                 logger.warning("Buy command received but bot not properly initialized")
                 update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
-                # Try to reinitialize
-                asyncio.run(self.initialize())
                 return
 
-            if str(update.effective_chat.id) != str(NOTIFICATION_CONFIG['telegram_chat_id']):
-                logger.warning(f"Unauthorized access attempt from chat ID: {update.effective_chat.id}")
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
                 update.message.reply_text("❌ Unauthorized access. This bot is private.")
                 return
 
-            # Import here to avoid circular import
-            from bot import place_limit_order, get_event_loop
+            # Prompt for confirmation
+            self._pending_buy_confirmation[chat_id] = (time.time(), 'buy')
+            update.message.reply_text(
+                "⚠️ Are you sure you want to execute a buy order?\n"
+                "Reply with /confirm within 30 seconds to proceed."
+            )
+            logger.info(f"Buy confirmation requested for chat {chat_id}")
+        except Exception as e:
+            error_msg = f"❌ Error preparing buy order: {str(e)}"
+            logger.error(error_msg)
+            try:
+                update.message.reply_text(error_msg)
+            except Exception as reply_error:
+                logger.error(f"Failed to send error message: {reply_error}")
+
+    def handle_buy_min_command(self, update: Update, context: CallbackContext):
+        """Handle the /buymin command with confirmation"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if not self._check_command_cooldown():
+                update.message.reply_text("⏳ Please wait a moment before sending another command.")
+                return
+
+            if not self.initialized or not self.updater or not self.updater.running:
+                logger.warning("Buy min command received but bot not properly initialized")
+                update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
+                return
+
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+
+            # Prompt for confirmation
+            self._pending_buy_confirmation[chat_id] = (time.time(), 'buymin')
+            update.message.reply_text(
+                "⚠️ Are you sure you want to execute a minimum BTC buy order?\n"
+                "Reply with /confirm within 30 seconds to proceed."
+            )
+            logger.info(f"Buy min confirmation requested for chat {chat_id}")
+        except Exception as e:
+            error_msg = f"❌ Error preparing minimum buy order: {str(e)}"
+            logger.error(error_msg)
+            try:
+                update.message.reply_text(error_msg)
+            except Exception as reply_error:
+                logger.error(f"Failed to send error message: {reply_error}")
+
+    def handle_confirm_command(self, update: Update, context: CallbackContext):
+        """Handle the /confirm command to execute a pending buy"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            # Check if there is a pending confirmation and it's within 30 seconds
+            pending = self._pending_buy_confirmation.get(chat_id)
+            if not pending:
+                update.message.reply_text("❌ No pending buy order to confirm or confirmation timed out.")
+                logger.info(f"No pending buy order or confirmation timed out for chat {chat_id}")
+                return
+                
+            ts, command_type = pending
+            if (time.time() - ts) > 30:
+                update.message.reply_text("❌ Confirmation timed out. Please try again.")
+                logger.info(f"Confirmation timed out for chat {chat_id}")
+                self._pending_buy_confirmation.pop(chat_id, None)
+                return
+
+            # Remove pending confirmation
+            self._pending_buy_confirmation.pop(chat_id, None)
             
-            update.message.reply_text("🔄 Initiating manual buy order...")
-            logger.info("Buy command received, initiating order...")
+            # Determine which callback to use based on the stored command type
+            callback = self._buy_min_callback if command_type == 'buymin' else self._buy_callback
             
+            if not callback:
+                update.message.reply_text("❌ Buy functionality not initialized. Please contact the administrator.")
+                logger.error("Buy callback not set")
+                return
+
+            update.message.reply_text("🔄 Confirmed. Initiating buy order...")
+            logger.info(f"Buy confirmed by chat {chat_id}, initiating {command_type} order...")
+            
+            # Use the callback to execute the buy order
+            from shared import get_event_loop
             loop = get_event_loop()
-            asyncio.run_coroutine_threadsafe(place_limit_order(), loop)
+            asyncio.run_coroutine_threadsafe(callback(), loop)
             update.message.reply_text("✅ Buy order process initiated. Check the logs for details.")
-            logger.info("Buy command executed successfully")
-            
+            logger.info(f"{command_type} command executed successfully")
         except Exception as e:
             error_msg = f"❌ Error executing buy order: {str(e)}"
             logger.error(error_msg)
@@ -300,6 +400,117 @@ class NotificationManager:
                 update.message.reply_text(error_msg)
             except Exception as reply_error:
                 logger.error(f"Failed to send error message: {reply_error}")
+
+    def handle_eur_convert_confirm_command(self, update: Update, context: CallbackContext):
+        """Handle the /confirm_eur command to execute a pending EUR conversion"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            # Check if there is a pending confirmation and it's within 6 hours
+            pending = self._pending_eur_convert_confirmation.get(chat_id)
+            if not pending:
+                update.message.reply_text("❌ No pending EUR conversion to confirm or confirmation timed out.")
+                logger.info(f"No pending EUR conversion or confirmation timed out for chat {chat_id}")
+                return
+                
+            ts, amount = pending
+            if (time.time() - ts) > (6 * 3600):  # 6 hours in seconds
+                update.message.reply_text("❌ EUR conversion confirmation timed out. Please try again.")
+                logger.info(f"EUR conversion confirmation timed out for chat {chat_id}")
+                self._pending_eur_convert_confirmation.pop(chat_id, None)
+                return
+
+            # Remove pending confirmation
+            self._pending_eur_convert_confirmation.pop(chat_id, None)
+            
+            if not self._eur_convert_callback:
+                update.message.reply_text("❌ EUR conversion functionality not initialized. Please contact the administrator.")
+                logger.error("EUR convert callback not set")
+                return
+
+            update.message.reply_text("🔄 Confirmed. Initiating EUR to USDC conversion...")
+            logger.info(f"EUR conversion confirmed by chat {chat_id}, amount: {amount:.2f} EUR")
+            
+            # Use the callback to execute the conversion
+            from shared import get_event_loop
+            loop = get_event_loop()
+            asyncio.run_coroutine_threadsafe(self._eur_convert_callback(amount), loop)
+            update.message.reply_text("✅ EUR conversion process initiated. Check the logs for details.")
+            logger.info("EUR conversion command executed successfully")
+        except Exception as e:
+            error_msg = f"❌ Error executing EUR conversion: {str(e)}"
+            logger.error(error_msg)
+            try:
+                update.message.reply_text(error_msg)
+            except Exception as reply_error:
+                logger.error(f"Failed to send error message: {reply_error}")
+
+    def handle_convert_eur_command(self, update: Update, context: CallbackContext):
+        """Handle the /convert_eur command to manually trigger EUR conversion"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if not self._check_command_cooldown():
+                update.message.reply_text("⏳ Please wait a moment before sending another command.")
+                return
+
+            if not self.initialized or not self.updater or not self.updater.running:
+                logger.warning("Convert EUR command received but bot not properly initialized")
+                update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
+                return
+
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+
+            # Check if an amount was provided
+            amount = None
+            if context.args and len(context.args) > 0:
+                try:
+                    amount = float(context.args[0])
+                    if amount <= 0:
+                        update.message.reply_text("❌ Amount must be greater than 0")
+                        return
+                except ValueError:
+                    update.message.reply_text("❌ Invalid amount. Please provide a valid number.")
+                    return
+
+            # Execute the conversion
+            from shared import get_event_loop
+            loop = get_event_loop()
+            asyncio.run_coroutine_threadsafe(self._eur_convert_callback(amount), loop)
+            update.message.reply_text(
+                f"🔄 Initiating EUR to USDC conversion{' for ' + str(amount) + ' EUR' if amount else ''}...\n"
+                "Check the logs for details."
+            )
+            logger.info(f"Manual EUR conversion initiated by chat {chat_id}{' for ' + str(amount) + ' EUR' if amount else ''}")
+        except Exception as e:
+            error_msg = f"❌ Error initiating EUR conversion: {str(e)}"
+            logger.error(error_msg)
+            try:
+                update.message.reply_text(error_msg)
+            except Exception as reply_error:
+                logger.error(f"Failed to send error message: {reply_error}")
+
+    async def request_eur_convert_confirmation(self, amount: float):
+        """Request confirmation for EUR conversion if amount is over 150 EUR"""
+        if amount <= 150:
+            return True  # No confirmation needed for amounts <= 150 EUR
+            
+        chat_id = NOTIFICATION_CONFIG['telegram_chat_id']
+        self._pending_eur_convert_confirmation[chat_id] = (time.time(), amount)
+        
+        try:
+            await self.send_notification(
+                f"⚠️ Large EUR to USDC conversion requested:\n"
+                f"Amount: {amount:.2f} EUR\n\n"
+                f"Reply with /confirm_eur within 6 hours to proceed.\n"
+                f"If not confirmed, the conversion will be cancelled.",
+                "WARNING"
+            )
+            return False  # Confirmation pending
+        except Exception as e:
+            logger.error(f"Failed to send EUR conversion confirmation request: {e}")
+            return False  # Treat as not confirmed on error
 
     async def send_notification(self, message, level="INFO"):
         """Send notification through all enabled channels"""
@@ -361,6 +572,122 @@ class NotificationManager:
             server.login(NOTIFICATION_CONFIG['email_username'], NOTIFICATION_CONFIG['email_password'])
             server.send_message(msg)
 
+    def set_buy_callback(self, callback):
+        """Set the callback function to be called when a buy order is confirmed"""
+        self._buy_callback = callback
+
+    def set_buy_min_callback(self, callback):
+        """Set the callback function to be called when a minimum buy order is confirmed"""
+        self._buy_min_callback = callback
+
+    def set_eur_convert_callback(self, callback):
+        """Set the callback function to be called when EUR conversion is confirmed"""
+        self._eur_convert_callback = callback
+
+    def handle_enable_command(self, update: Update, context: CallbackContext):
+        """Handle the /enable command to enable bot scheduling"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if not self._check_command_cooldown():
+                update.message.reply_text("⏳ Please wait a moment before sending another command.")
+                return
+
+            if not self.initialized or not self.updater or not self.updater.running:
+                logger.warning("Enable command received but bot not properly initialized")
+                update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
+                return
+
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+
+            if self._scheduling_enabled:
+                update.message.reply_text("ℹ️ Bot scheduling is already enabled.")
+                return
+
+            if not self._scheduling_state_callback:
+                update.message.reply_text("❌ Bot scheduling control not initialized. Please contact the administrator.")
+                logger.error("Scheduling state callback not set")
+                return
+
+            # Enable scheduling
+            self._scheduling_enabled = True
+            self._scheduling_state_callback(True)
+            
+            update.message.reply_text("✅ Bot scheduling has been enabled.")
+            logger.info(f"Bot scheduling enabled by chat {chat_id}")
+            
+            # Send notification about the change
+            asyncio.run_coroutine_threadsafe(
+                self.send_notification("Bot scheduling has been enabled.", "INFO"),
+                self._get_loop()
+            )
+            
+        except Exception as e:
+            error_msg = f"❌ Error enabling bot scheduling: {str(e)}"
+            logger.error(error_msg)
+            try:
+                update.message.reply_text(error_msg)
+            except Exception as reply_error:
+                logger.error(f"Failed to send error message: {reply_error}")
+
+    def handle_disable_command(self, update: Update, context: CallbackContext):
+        """Handle the /disable command to disable bot scheduling"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if not self._check_command_cooldown():
+                update.message.reply_text("⏳ Please wait a moment before sending another command.")
+                return
+
+            if not self.initialized or not self.updater or not self.updater.running:
+                logger.warning("Disable command received but bot not properly initialized")
+                update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
+                return
+
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+
+            if not self._scheduling_enabled:
+                update.message.reply_text("ℹ️ Bot scheduling is already disabled.")
+                return
+
+            if not self._scheduling_state_callback:
+                update.message.reply_text("❌ Bot scheduling control not initialized. Please contact the administrator.")
+                logger.error("Scheduling state callback not set")
+                return
+
+            # Disable scheduling
+            self._scheduling_enabled = False
+            self._scheduling_state_callback(False)
+            
+            update.message.reply_text("✅ Bot scheduling has been disabled.")
+            logger.info(f"Bot scheduling disabled by chat {chat_id}")
+            
+            # Send notification about the change
+            asyncio.run_coroutine_threadsafe(
+                self.send_notification("Bot scheduling has been disabled.", "WARNING"),
+                self._get_loop()
+            )
+            
+        except Exception as e:
+            error_msg = f"❌ Error disabling bot scheduling: {str(e)}"
+            logger.error(error_msg)
+            try:
+                update.message.reply_text(error_msg)
+            except Exception as reply_error:
+                logger.error(f"Failed to send error message: {reply_error}")
+
+    def set_scheduling_state_callback(self, callback):
+        """Set the callback function to be called when scheduling state changes"""
+        self._scheduling_state_callback = callback
+
+    def is_scheduling_enabled(self):
+        """Check if bot scheduling is currently enabled"""
+        return self._scheduling_enabled
+
 # Create a global notification manager instance
 notification_manager = NotificationManager()
 
@@ -383,6 +710,8 @@ def send_test_notification():
                 asyncio.run(notification_manager.send_notification(
                     "🔔 Bot is ready! Available commands:\n"
                     "/buy - Trigger a manual buy order\n"
+                    "/buymin - Trigger a minimum BTC buy order\n"
+                    "/convert_eur [amount] - Convert EUR to USDC (optional amount)\n"
                     "/status - Check bot status",
                     "SUCCESS"
                 ))

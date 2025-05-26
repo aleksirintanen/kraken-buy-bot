@@ -6,7 +6,7 @@ load_dotenv()
 
 # Trading Configuration
 TRADING_CONFIG = {
-    'symbol': os.getenv('TRADING_SYMBOL', 'XBT/USDC'),
+    'symbol': os.getenv('TRADING_SYMBOL', 'BTC/USDC'),
     'min_btc_amount': float(os.getenv('MIN_BTC_AMOUNT', '0.00005')),
     'balance_percentage': float(os.getenv('BALANCE_PERCENTAGE', '20')) / 100,  # Convert percentage to decimal
     'order_timeout_minutes': int(os.getenv('ORDER_TIMEOUT_MINUTES', '5')),
