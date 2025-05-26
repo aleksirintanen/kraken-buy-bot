@@ -298,7 +298,7 @@ if DRY_RUN:
     schedule.every().hour.do(check_eur_balance)
     
     log_action(f"Scheduled to run on Monday {SCHEDULE_CONFIG['monday_time']} {SCHEDULE_CONFIG['timezone']} with fallback to Sunday {SCHEDULE_CONFIG['sunday_time']} {SCHEDULE_CONFIG['timezone']}")
-    log_action("EUR to USDC conversion check scheduled every hour")
+    log_action("EUR to USDC conversion check scheduled every day at 09:00 AM and 09:00 PM")
     log_action(f"Current state: Monday attempt {'successful' if monday_attempt_successful else 'not successful'}")
     check_eur_balance()
 else:
@@ -316,9 +316,9 @@ else:
     log_action(f"Trading pair: {TRADING_CONFIG['symbol']}")
     log_action(f"Minimum BTC amount: {TRADING_CONFIG['min_btc_amount']}")
     log_action(f"Scheduled to run on Monday {SCHEDULE_CONFIG['monday_time']} {SCHEDULE_CONFIG['timezone']} with fallback to Sunday {SCHEDULE_CONFIG['sunday_time']} {SCHEDULE_CONFIG['timezone']}")
-    log_action("EUR to USDC conversion check scheduled every hour")
+    log_action("EUR to USDC conversion check scheduled every day at 09:00 AM and 09:00 PM")
     log_action(f"Current state: Monday attempt {'successful' if monday_attempt_successful else 'not successful'}")
-
+    check_eur_balance()
 # Keep the script running
 try:
     while True:
