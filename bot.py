@@ -243,6 +243,8 @@ async def convert_eur_to_usdc():
             
             # Calculate USDC amount we would get
             usdc_amount = eur_balance / usdc_eur_price
+
+            log_action(f"Would convert {eur_balance:.2f} EUR to {usdc_amount:.2f} USDC")
             
             if DRY_RUN:
                 log_action(
