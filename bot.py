@@ -253,7 +253,7 @@ async def convert_eur_to_usdc():
                 
             # Place market sell order for EUR/USDC
             try:
-                order = kraken.create_market_sell_order('USDC/EUR', usdc_amount)
+                order = kraken.create_market_buy_order('USDC/EUR', usdc_amount)
                 log_action(
                     f"Successfully converted {eur_balance:.2f} EUR to {usdc_amount:.2f} USDC",
                     "SUCCESS"
