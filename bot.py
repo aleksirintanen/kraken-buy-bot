@@ -123,7 +123,7 @@ async def place_limit_order():
         # Get current balance
         balance = kraken.fetch_balance()
         usdc_balance = balance['total'].get('USDC.F', 0)
-        btc_balance = balance['total'].get('BTC', 0)
+        btc_balance = balance['total'].get('XBT.F', 0)
         
         # Update metrics
         metrics_manager.update_balances(usdc_balance, btc_balance)
@@ -300,6 +300,7 @@ if DRY_RUN:
     log_action(f"Scheduled to run on Monday {SCHEDULE_CONFIG['monday_time']} {SCHEDULE_CONFIG['timezone']} with fallback to Sunday {SCHEDULE_CONFIG['sunday_time']} {SCHEDULE_CONFIG['timezone']}")
     log_action("EUR to USDC conversion check scheduled every hour")
     log_action(f"Current state: Monday attempt {'successful' if monday_attempt_successful else 'not successful'}")
+    check_eur_balance()
 else:
     # Schedule primary attempt for Monday
     schedule.every().monday.at(SCHEDULE_CONFIG['monday_time']).do(place_monday_order)
@@ -307,8 +308,9 @@ else:
     # Schedule fallback attempt for Sunday
     schedule.every().sunday.at(SCHEDULE_CONFIG['sunday_time']).do(place_sunday_order)
     
-    # Schedule EUR to USDC conversion check every hour
-    schedule.every().hour.do(check_eur_balance)
+    # Schedule EUR to USDC conversion check every  day at 09:00 AM and 09:00 PM
+    schedule.every().day.at("09:00").do(check_eur_balance)
+    schedule.every().day.at("19:00").do(check_eur_balance)
     
     log_action("Bot started in LIVE mode", "SUCCESS")
     log_action(f"Trading pair: {TRADING_CONFIG['symbol']}")
