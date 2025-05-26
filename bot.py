@@ -234,15 +234,15 @@ async def convert_eur_to_usdc():
         # Get current EUR/USDC price
         try:
             ticker = kraken.fetch_ticker('USDC/EUR')
-            eur_usdc_price = ticker.get('last', 0)
-            if not eur_usdc_price:
+            usdc_eur_price = ticker.get('last', 0)
+            if not usdc_eur_price:
                 log_action("Could not fetch USDC/EUR price", "WARNING")
                 return
                 
-            log_action(f"Current USDC/EUR price: {eur_usdc_price:.4f}")
+            log_action(f"Current USDC/EUR price: {usdc_eur_price:.4f}")
             
             # Calculate USDC amount we would get
-            usdc_amount = eur_balance * eur_usdc_price
+            usdc_amount = eur_balance / usdc_eur_price
             
             if DRY_RUN:
                 log_action(
@@ -253,7 +253,7 @@ async def convert_eur_to_usdc():
                 
             # Place market sell order for EUR/USDC
             try:
-                order = kraken.create_market_sell_order('USDC/EUR', eur_balance)
+                order = kraken.create_market_sell_order('USDC/EUR', usdc_amount)
                 log_action(
                     f"Successfully converted {eur_balance:.2f} EUR to {usdc_amount:.2f} USDC",
                     "SUCCESS"
@@ -261,7 +261,7 @@ async def convert_eur_to_usdc():
                 # Send notification
                 await send_notification_async(
                     f"✅ Converted {eur_balance:.2f} EUR to {usdc_amount:.2f} USDC\n"
-                    f"Rate: 1 EUR = {eur_usdc_price:.4f} USDC",
+                    f"Rate: 1 EUR = {usdc_eur_price:.4f} USDC",
                     "SUCCESS"
                 )
             except Exception as e:
