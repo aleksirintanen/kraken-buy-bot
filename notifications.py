@@ -27,12 +27,14 @@ class NotificationManager:
         self._startup_notification_sent = False  # Track if startup notification was sent
         self._loop = None  # Will be set when needed
         self._pending_buy_confirmation = {}  # chat_id: (timestamp, command_type)
-        self._pending_eur_convert_confirmation = {}  # chat_id: (timestamp, amount)
         self._buy_callback = None  # Callback for buy orders
-        self._buy_min_callback = None  # Callback for minimum buy orders
-        self._eur_convert_callback = None  # Callback for EUR conversion
         self._scheduling_enabled = True  # Track if bot scheduling is enabled
         self._scheduling_state_callback = None  # Callback to control bot scheduling
+        self._buy_sol_callback = None  # Callback for SOL buy orders
+        self._buy_eth_callback = None  # Callback for ETH buy orders
+        self._buy_usdc_callback = None  # Callback for USDC buy orders
+        self._last_price_check = {}  # Store last price check time per chat
+        self._price_check_cooldown = 10  # seconds between price checks
 
     def _start_polling(self):
         """Start polling in a separate thread"""
@@ -113,14 +115,19 @@ class NotificationManager:
             
             # Add command handlers
             dispatcher = self.updater.dispatcher
+            dispatcher.add_handler(CommandHandler("start", self.handle_start_command))
+            dispatcher.add_handler(CommandHandler("help", self.handle_help_command))
             dispatcher.add_handler(CommandHandler("buy", self.handle_buy_command))
-            dispatcher.add_handler(CommandHandler("buymin", self.handle_buy_min_command))
+            dispatcher.add_handler(CommandHandler("buysol", self.handle_buy_sol_command))
+            dispatcher.add_handler(CommandHandler("buyeth", self.handle_buy_eth_command))
+            dispatcher.add_handler(CommandHandler("buyusdc", self.handle_buy_usdc_command))
             dispatcher.add_handler(CommandHandler("status", self.handle_status_command))
             dispatcher.add_handler(CommandHandler("confirm", self.handle_confirm_command))
-            dispatcher.add_handler(CommandHandler("confirm_eur", self.handle_eur_convert_confirm_command))
-            dispatcher.add_handler(CommandHandler("convert_eur", self.handle_convert_eur_command))
             dispatcher.add_handler(CommandHandler("enable", self.handle_enable_command))
             dispatcher.add_handler(CommandHandler("disable", self.handle_disable_command))
+            dispatcher.add_handler(CommandHandler("price", self.handle_price_command))
+            dispatcher.add_handler(CommandHandler("balance", self.handle_balance_command))
+            dispatcher.add_handler(CommandHandler("history", self.handle_history_command))
             
             # Test the connection and verify chat
             logger.info("Testing Telegram bot connection...")
@@ -132,10 +139,16 @@ class NotificationManager:
                 startup_message = (
                     "🔔 Bot is starting up and testing notifications...\n\n"
                     "Available commands:\n"
-                    "/buy - Trigger a manual buy order\n"
-                    "/buymin - Trigger a minimum BTC buy order\n"
-                    "/convert_eur [amount] - Convert EUR to USDC (optional amount)\n"
-                    "/status - Check bot status\n"
+                    "/start - Start the bot and get welcome message\n"
+                    "/help - Show detailed help for all commands\n"
+                    "/buy - Buy BTC with available EUR/USDC\n"
+                    "/buysol - Buy SOL with available EUR/USDC\n"
+                    "/buyeth - Buy ETH with available EUR/USDC\n"
+                    "/buyusdc - Buy USDC with EUR\n"
+                    "/price - Check current prices\n"
+                    "/balance - Check your balances\n"
+                    "/status - Check bot status and all balances\n"
+                    "/history - View recent trading history\n"
                     "/enable - Enable bot scheduling\n"
                     "/disable - Disable bot scheduling"
                 )
@@ -203,7 +216,7 @@ class NotificationManager:
         return self._loop
 
     def handle_status_command(self, update, context):
-        """Handle the /status command"""
+        """Handle the /status command with detailed status reporting"""
         try:
             if not self._check_command_cooldown():
                 update.message.reply_text("⏳ Please wait a moment before sending another command.")
@@ -225,55 +238,102 @@ class NotificationManager:
             logger.info(f"Status command received from chat ID: {update.effective_chat.id}")
             
             # Send initial response
-            update.message.reply_text("🔄 Fetching status and balances...")
+            update.message.reply_text("🔄 Fetching detailed status information...")
             
             try:
+                # Fetch all required data
                 logger.info("Fetching balance from Kraken...")
-                # Fetch balance
                 balance = kraken.fetch_balance()
-                logger.debug(f"Raw balance response: {balance}")
                 
+                # Get balances
                 usdc_balance = balance.get('total', {}).get('USDC.F', 0)
                 btc_balance = balance.get('total', {}).get('XBT.F', 0)
+                eth_balance = balance.get('total', {}).get('ETH.F', 0)
+                sol_balance = balance.get('total', {}).get('SOL', 0)
                 eur_balance = balance.get('total', {}).get('EUR', 0)
-                logger.info(f"Retrieved balances - USDC: {usdc_balance}, BTC: {btc_balance}, EUR: {eur_balance}")
                 
-                logger.info("Fetching current BTC price...")
-                # Get current price
-                ticker = kraken.fetch_ticker('BTC/USDC')
-                current_price = ticker.get('last', 0)
-                logger.info(f"Current BTC price: {current_price}")
-
-                # Get EUR/USDC price for EUR value calculation
-                eur_ticker = kraken.fetch_ticker('USDC/EUR')
-                eur_usdc_price = eur_ticker.get('last', 0)
-                eur_value_usdc = eur_balance * eur_usdc_price if eur_usdc_price else 0
+                # Get current prices for value calculation only
+                btc_eur = kraken.fetch_ticker('BTC/EUR')['last']
+                eth_eur = kraken.fetch_ticker('ETH/EUR')['last']
+                sol_eur = kraken.fetch_ticker('SOL/EUR')['last']
+                usdc_eur = kraken.fetch_ticker('USDC/EUR')['last']
                 
-                mode = "DRY RUN" if DRY_RUN else "LIVE"
+                # Calculate values in EUR
+                btc_eur_value = btc_balance * btc_eur
+                eth_eur_value = eth_balance * eth_eur
+                sol_eur_value = sol_balance * sol_eur
+                usdc_eur_value = usdc_balance * usdc_eur
+                
+                # Get recent trades
+                recent_trades = kraken.fetch_closed_orders(limit=3)  # Last 3 trades
+                
+                # Calculate total portfolio value
+                total_eur_value = (eur_balance + btc_eur_value + eth_eur_value + sol_eur_value + usdc_eur_value)
+                
+                # Prepare status message
                 status_msg = (
-                    f"🤖 Bot Status:\n\n"
-                    f"Mode: {mode}\n"
-                    f"Scheduling: {'Enabled' if self._scheduling_enabled else 'Disabled'}\n"
-                    f"Current BTC Price: {current_price:.2f} USDC\n\n"
-                    f"Balances:\n"
-                    f"USDC: {usdc_balance:.2f} USDC\n"
-                    f"BTC: {btc_balance:.8f} BTC (≈ {btc_balance * current_price:.2f} USDC)\n"
-                    f"EUR: {eur_balance:.2f} EUR (≈ {eur_value_usdc:.2f} USDC)\n\n"
-                    f"Total Value: {(usdc_balance + btc_balance * current_price + eur_value_usdc):.2f} USDC\n"
-                    f"Bot Status: {'Running' if self.updater and self.updater.running else 'Stopped'}\n"
-                    f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    "🤖 Detailed Bot Status\n\n"
+                    f"🔹 System Status:\n"
+                    f"• Mode: {'🟡 DRY RUN' if DRY_RUN else '🟢 LIVE'}\n"
+                    f"• Bot State: {'🟢 Running' if self.updater and self.updater.running else '🔴 Stopped'}\n"
+                    f"• Scheduling: {'🟢 Enabled' if self._scheduling_enabled else '🔴 Disabled'}\n"
+                    f"• Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    
+                    f"🔹 Portfolio Balances:\n"
+                    f"EUR: {eur_balance:.2f} EUR\n"
+                    f"USDC: {usdc_balance:.2f} USDC (≈ {usdc_eur_value:.2f} EUR)\n"
+                    f"BTC: {btc_balance:.8f} BTC (≈ {btc_eur_value:.2f} EUR)\n"
+                    f"ETH: {eth_balance:.8f} ETH (≈ {eth_eur_value:.2f} EUR)\n"
+                    f"SOL: {sol_balance:.8f} SOL (≈ {sol_eur_value:.2f} EUR)\n\n"
+                    
+                    f"🔹 Total Portfolio Value:\n"
+                    f"• {total_eur_value:.2f} EUR\n\n"
                 )
-                logger.info("Sending status message to Telegram")
+                
+                # Add recent trades if available
+                if recent_trades:
+                    status_msg += "🔹 Recent Trades:\n"
+                    for trade in recent_trades:
+                        symbol = trade['symbol']
+                        side = "Buy" if trade['side'] == 'buy' else "Sell"
+                        amount = float(trade['amount'])
+                        price = float(trade['price'])
+                        cost = amount * price
+                        status = trade['status']
+                        timestamp = datetime.fromtimestamp(trade['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+                        
+                        status_msg += (
+                            f"• {side} {symbol}\n"
+                            f"  Amount: {amount:.8f}\n"
+                            f"  Price: {price:.2f}\n"
+                            f"  Total: {cost:.2f}\n"
+                            f"  Status: {status}\n"
+                            f"  Time: {timestamp}\n\n"
+                        )
+                else:
+                    status_msg += "🔹 Recent Trades: No recent trades found\n\n"
+                
+                # Add system information
+                status_msg += (
+                    "🔹 System Information:\n"
+                    f"• Command Cooldown: {self._command_cooldown} seconds\n"
+                    f"• Price Check Cooldown: {self._price_check_cooldown} seconds\n"
+                    f"• Bot Uptime: {self._get_bot_uptime()}\n"
+                    f"• Last Command: {self._get_last_command_time()}\n"
+                )
+                
+                # Send the status message
+                logger.info("Sending detailed status message to Telegram")
                 update.message.reply_text(status_msg)
                 logger.info("Status command executed successfully")
                 
             except Exception as e:
-                error_msg = f"❌ Error fetching balances: {str(e)}"
+                error_msg = f"❌ Error fetching status information: {str(e)}"
                 logger.error(f"Error in status command: {error_msg}", exc_info=True)
                 update.message.reply_text(
-                    f"❌ Error fetching balances:\n"
+                    f"❌ Error fetching status information:\n"
                     f"Error: {str(e)}\n\n"
-                    f"Bot is still running in {mode} mode.\n"
+                    f"Bot is still running in {'DRY RUN' if DRY_RUN else 'LIVE'} mode.\n"
                     f"Please try again in a few moments."
                 )
                 
@@ -288,6 +348,46 @@ class NotificationManager:
                 )
             except Exception as reply_error:
                 logger.error(f"Failed to send error message: {reply_error}", exc_info=True)
+
+    def _get_bot_uptime(self):
+        """Calculate and format the bot's uptime"""
+        if not hasattr(self, '_start_time'):
+            self._start_time = time.time()
+        
+        uptime_seconds = int(time.time() - self._start_time)
+        days = uptime_seconds // (24 * 3600)
+        hours = (uptime_seconds % (24 * 3600)) // 3600
+        minutes = (uptime_seconds % 3600) // 60
+        seconds = uptime_seconds % 60
+        
+        if days > 0:
+            return f"{days}d {hours}h {minutes}m {seconds}s"
+        elif hours > 0:
+            return f"{hours}h {minutes}m {seconds}s"
+        elif minutes > 0:
+            return f"{minutes}m {seconds}s"
+        else:
+            return f"{seconds}s"
+
+    def _get_last_command_time(self):
+        """Format the last command time"""
+        if self._last_command_time == 0:
+            return "No commands executed yet"
+        
+        last_command = datetime.fromtimestamp(self._last_command_time)
+        now = datetime.now()
+        diff = now - last_command
+        
+        if diff.days > 0:
+            return f"{diff.days} days ago"
+        elif diff.seconds > 3600:
+            hours = diff.seconds // 3600
+            return f"{hours} hours ago"
+        elif diff.seconds > 60:
+            minutes = diff.seconds // 60
+            return f"{minutes} minutes ago"
+        else:
+            return f"{diff.seconds} seconds ago"
 
     def handle_buy_command(self, update: Update, context: CallbackContext):
         """Handle the /buy command with confirmation"""
@@ -322,33 +422,84 @@ class NotificationManager:
             except Exception as reply_error:
                 logger.error(f"Failed to send error message: {reply_error}")
 
-    def handle_buy_min_command(self, update: Update, context: CallbackContext):
-        """Handle the /buymin command with confirmation"""
+    def handle_buy_sol_command(self, update: Update, context: CallbackContext):
+        """Handle the /buysol command with confirmation"""
         chat_id = str(update.effective_chat.id)
         try:
             if not self._check_command_cooldown():
                 update.message.reply_text("⏳ Please wait a moment before sending another command.")
                 return
-
             if not self.initialized or not self.updater or not self.updater.running:
-                logger.warning("Buy min command received but bot not properly initialized")
+                logger.warning("Buy SOL command received but bot not properly initialized")
                 update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
                 return
-
             if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
                 logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
                 update.message.reply_text("❌ Unauthorized access. This bot is private.")
                 return
-
-            # Prompt for confirmation
-            self._pending_buy_confirmation[chat_id] = (time.time(), 'buymin')
+            self._pending_buy_confirmation[chat_id] = (time.time(), 'buysol')
             update.message.reply_text(
-                "⚠️ Are you sure you want to execute a minimum BTC buy order?\n"
-                "Reply with /confirm within 30 seconds to proceed."
+                "⚠️ Are you sure you want to execute a SOL buy order?\nReply with /confirm within 30 seconds to proceed."
             )
-            logger.info(f"Buy min confirmation requested for chat {chat_id}")
+            logger.info(f"Buy SOL confirmation requested for chat {chat_id}")
         except Exception as e:
-            error_msg = f"❌ Error preparing minimum buy order: {str(e)}"
+            error_msg = f"❌ Error preparing SOL buy order: {str(e)}"
+            logger.error(error_msg)
+            try:
+                update.message.reply_text(error_msg)
+            except Exception as reply_error:
+                logger.error(f"Failed to send error message: {reply_error}")
+
+    def handle_buy_eth_command(self, update: Update, context: CallbackContext):
+        """Handle the /buyeth command with confirmation"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if not self._check_command_cooldown():
+                update.message.reply_text("⏳ Please wait a moment before sending another command.")
+                return
+            if not self.initialized or not self.updater or not self.updater.running:
+                logger.warning("Buy ETH command received but bot not properly initialized")
+                update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
+                return
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+            self._pending_buy_confirmation[chat_id] = (time.time(), 'buyeth')
+            update.message.reply_text(
+                "⚠️ Are you sure you want to execute an ETH buy order?\nReply with /confirm within 30 seconds to proceed."
+            )
+            logger.info(f"Buy ETH confirmation requested for chat {chat_id}")
+        except Exception as e:
+            error_msg = f"❌ Error preparing ETH buy order: {str(e)}"
+            logger.error(error_msg)
+            try:
+                update.message.reply_text(error_msg)
+            except Exception as reply_error:
+                logger.error(f"Failed to send error message: {reply_error}")
+
+    def handle_buy_usdc_command(self, update: Update, context: CallbackContext):
+        """Handle the /buyusdc command with confirmation"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if not self._check_command_cooldown():
+                update.message.reply_text("⏳ Please wait a moment before sending another command.")
+                return
+            if not self.initialized or not self.updater or not self.updater.running:
+                logger.warning("Buy USDC command received but bot not properly initialized")
+                update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
+                return
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+            self._pending_buy_confirmation[chat_id] = (time.time(), 'buyusdc')
+            update.message.reply_text(
+                "⚠️ Are you sure you want to execute a USDC buy order?\nReply with /confirm within 30 seconds to proceed."
+            )
+            logger.info(f"Buy USDC confirmation requested for chat {chat_id}")
+        except Exception as e:
+            error_msg = f"❌ Error preparing USDC buy order: {str(e)}"
             logger.error(error_msg)
             try:
                 update.message.reply_text(error_msg)
@@ -359,35 +510,33 @@ class NotificationManager:
         """Handle the /confirm command to execute a pending buy"""
         chat_id = str(update.effective_chat.id)
         try:
-            # Check if there is a pending confirmation and it's within 30 seconds
             pending = self._pending_buy_confirmation.get(chat_id)
             if not pending:
                 update.message.reply_text("❌ No pending buy order to confirm or confirmation timed out.")
                 logger.info(f"No pending buy order or confirmation timed out for chat {chat_id}")
                 return
-                
             ts, command_type = pending
             if (time.time() - ts) > 30:
                 update.message.reply_text("❌ Confirmation timed out. Please try again.")
                 logger.info(f"Confirmation timed out for chat {chat_id}")
                 self._pending_buy_confirmation.pop(chat_id, None)
                 return
-
-            # Remove pending confirmation
             self._pending_buy_confirmation.pop(chat_id, None)
-            
             # Determine which callback to use based on the stored command type
-            callback = self._buy_min_callback if command_type == 'buymin' else self._buy_callback
-            
+            if command_type == 'buysol':
+                callback = self._buy_sol_callback
+            elif command_type == 'buyeth':
+                callback = self._buy_eth_callback
+            elif command_type == 'buyusdc':
+                callback = self._buy_usdc_callback
+            else:
+                callback = self._buy_callback
             if not callback:
                 update.message.reply_text("❌ Buy functionality not initialized. Please contact the administrator.")
                 logger.error("Buy callback not set")
                 return
-
             update.message.reply_text("🔄 Confirmed. Initiating buy order...")
             logger.info(f"Buy confirmed by chat {chat_id}, initiating {command_type} order...")
-            
-            # Use the callback to execute the buy order
             from shared import get_event_loop
             loop = get_event_loop()
             asyncio.run_coroutine_threadsafe(callback(), loop)
@@ -400,189 +549,6 @@ class NotificationManager:
                 update.message.reply_text(error_msg)
             except Exception as reply_error:
                 logger.error(f"Failed to send error message: {reply_error}")
-
-    def handle_eur_convert_confirm_command(self, update: Update, context: CallbackContext):
-        """Handle the /confirm_eur command to execute a pending EUR conversion"""
-        chat_id = str(update.effective_chat.id)
-        try:
-            # Check if there is a pending confirmation and it's within 6 hours
-            pending = self._pending_eur_convert_confirmation.get(chat_id)
-            if not pending:
-                update.message.reply_text("❌ No pending EUR conversion to confirm or confirmation timed out.")
-                logger.info(f"No pending EUR conversion or confirmation timed out for chat {chat_id}")
-                return
-                
-            ts, amount = pending
-            if (time.time() - ts) > (6 * 3600):  # 6 hours in seconds
-                update.message.reply_text("❌ EUR conversion confirmation timed out. Please try again.")
-                logger.info(f"EUR conversion confirmation timed out for chat {chat_id}")
-                self._pending_eur_convert_confirmation.pop(chat_id, None)
-                return
-
-            # Remove pending confirmation
-            self._pending_eur_convert_confirmation.pop(chat_id, None)
-            
-            if not self._eur_convert_callback:
-                update.message.reply_text("❌ EUR conversion functionality not initialized. Please contact the administrator.")
-                logger.error("EUR convert callback not set")
-                return
-
-            update.message.reply_text("🔄 Confirmed. Initiating EUR to USDC conversion...")
-            logger.info(f"EUR conversion confirmed by chat {chat_id}, amount: {amount:.2f} EUR")
-            
-            # Use the callback to execute the conversion
-            from shared import get_event_loop
-            loop = get_event_loop()
-            asyncio.run_coroutine_threadsafe(self._eur_convert_callback(amount), loop)
-            update.message.reply_text("✅ EUR conversion process initiated. Check the logs for details.")
-            logger.info("EUR conversion command executed successfully")
-        except Exception as e:
-            error_msg = f"❌ Error executing EUR conversion: {str(e)}"
-            logger.error(error_msg)
-            try:
-                update.message.reply_text(error_msg)
-            except Exception as reply_error:
-                logger.error(f"Failed to send error message: {reply_error}")
-
-    def handle_convert_eur_command(self, update: Update, context: CallbackContext):
-        """Handle the /convert_eur command to manually trigger EUR conversion"""
-        chat_id = str(update.effective_chat.id)
-        try:
-            if not self._check_command_cooldown():
-                update.message.reply_text("⏳ Please wait a moment before sending another command.")
-                return
-
-            if not self.initialized or not self.updater or not self.updater.running:
-                logger.warning("Convert EUR command received but bot not properly initialized")
-                update.message.reply_text("❌ Bot is not fully initialized yet. Please wait a moment and try again.")
-                return
-
-            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
-                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
-                update.message.reply_text("❌ Unauthorized access. This bot is private.")
-                return
-
-            # Check if an amount was provided
-            amount = None
-            if context.args and len(context.args) > 0:
-                try:
-                    amount = float(context.args[0])
-                    if amount <= 0:
-                        update.message.reply_text("❌ Amount must be greater than 0")
-                        return
-                except ValueError:
-                    update.message.reply_text("❌ Invalid amount. Please provide a valid number.")
-                    return
-
-            # Execute the conversion
-            from shared import get_event_loop
-            loop = get_event_loop()
-            asyncio.run_coroutine_threadsafe(self._eur_convert_callback(amount), loop)
-            update.message.reply_text(
-                f"🔄 Initiating EUR to USDC conversion{' for ' + str(amount) + ' EUR' if amount else ''}...\n"
-                "Check the logs for details."
-            )
-            logger.info(f"Manual EUR conversion initiated by chat {chat_id}{' for ' + str(amount) + ' EUR' if amount else ''}")
-        except Exception as e:
-            error_msg = f"❌ Error initiating EUR conversion: {str(e)}"
-            logger.error(error_msg)
-            try:
-                update.message.reply_text(error_msg)
-            except Exception as reply_error:
-                logger.error(f"Failed to send error message: {reply_error}")
-
-    async def request_eur_convert_confirmation(self, amount: float):
-        """Request confirmation for EUR conversion if amount is over 150 EUR"""
-        if amount <= 150:
-            return True  # No confirmation needed for amounts <= 150 EUR
-            
-        chat_id = NOTIFICATION_CONFIG['telegram_chat_id']
-        self._pending_eur_convert_confirmation[chat_id] = (time.time(), amount)
-        
-        try:
-            await self.send_notification(
-                f"⚠️ Large EUR to USDC conversion requested:\n"
-                f"Amount: {amount:.2f} EUR\n\n"
-                f"Reply with /confirm_eur within 6 hours to proceed.\n"
-                f"If not confirmed, the conversion will be cancelled.",
-                "WARNING"
-            )
-            return False  # Confirmation pending
-        except Exception as e:
-            logger.error(f"Failed to send EUR conversion confirmation request: {e}")
-            return False  # Treat as not confirmed on error
-
-    async def send_notification(self, message, level="INFO"):
-        """Send notification through all enabled channels"""
-        if not self.initialized and NOTIFICATION_CONFIG['telegram_enabled']:
-            await self.initialize()
-
-        if level == "ERROR":
-            message = f"🚨 ERROR: {message}"
-        elif level == "WARNING":
-            message = f"⚠️ WARNING: {message}"
-        elif level == "SUCCESS":
-            message = f"✅ SUCCESS: {message}"
-
-        # Send to Telegram
-        if NOTIFICATION_CONFIG['telegram_enabled'] and self.initialized:
-            try:
-                logger.debug(f"Sending Telegram notification: {message}")
-                self.telegram_bot.send_message(
-                    chat_id=NOTIFICATION_CONFIG['telegram_chat_id'],
-                    text=message,
-                    parse_mode='HTML'
-                )
-                logger.debug("Telegram notification sent successfully")
-            except TelegramError as e:
-                logger.error(f"Telegram API error: {e}")
-                # Try to reinitialize if we get a network error
-                if isinstance(e, NetworkError):
-                    self.initialized = False
-                    await self.initialize()
-            except Exception as e:
-                logger.error(f"Unexpected error sending Telegram notification: {e}")
-
-        # Send email
-        if NOTIFICATION_CONFIG['email_enabled']:
-            try:
-                self._send_email(message, level)
-            except Exception as e:
-                logger.error(f"Failed to send email notification: {e}")
-
-    def _send_email(self, message, level):
-        """Send email notification"""
-        if not all([
-            NOTIFICATION_CONFIG['email_smtp_server'],
-            NOTIFICATION_CONFIG['email_username'],
-            NOTIFICATION_CONFIG['email_password'],
-            NOTIFICATION_CONFIG['email_recipient']
-        ]):
-            return
-
-        msg = MIMEMultipart()
-        msg['From'] = NOTIFICATION_CONFIG['email_username']
-        msg['To'] = NOTIFICATION_CONFIG['email_recipient']
-        msg['Subject'] = f"Kraken Bot {level} Alert"
-
-        msg.attach(MIMEText(message, 'plain'))
-
-        with smtplib.SMTP(NOTIFICATION_CONFIG['email_smtp_server'], NOTIFICATION_CONFIG['email_smtp_port']) as server:
-            server.starttls()
-            server.login(NOTIFICATION_CONFIG['email_username'], NOTIFICATION_CONFIG['email_password'])
-            server.send_message(msg)
-
-    def set_buy_callback(self, callback):
-        """Set the callback function to be called when a buy order is confirmed"""
-        self._buy_callback = callback
-
-    def set_buy_min_callback(self, callback):
-        """Set the callback function to be called when a minimum buy order is confirmed"""
-        self._buy_min_callback = callback
-
-    def set_eur_convert_callback(self, callback):
-        """Set the callback function to be called when EUR conversion is confirmed"""
-        self._eur_convert_callback = callback
 
     def handle_enable_command(self, update: Update, context: CallbackContext):
         """Handle the /enable command to enable bot scheduling"""
@@ -688,6 +654,355 @@ class NotificationManager:
         """Check if bot scheduling is currently enabled"""
         return self._scheduling_enabled
 
+    def set_buy_callback(self, callback):
+        """Set the callback function to be called when a buy order is confirmed"""
+        self._buy_callback = callback
+
+    def set_buy_sol_callback(self, callback):
+        """Set the callback function to be called when a SOL buy order is confirmed"""
+        self._buy_sol_callback = callback
+
+    def set_buy_eth_callback(self, callback):
+        """Set the callback function to be called when an ETH buy order is confirmed"""
+        self._buy_eth_callback = callback
+
+    def set_buy_usdc_callback(self, callback):
+        """Set the callback function to be called when a USDC buy order is confirmed"""
+        self._buy_usdc_callback = callback
+
+    async def send_notification(self, message, level="INFO"):
+        """Send a notification to the configured Telegram chat
+        
+        Args:
+            message (str): The message to send
+            level (str): The level of the notification (INFO, WARNING, ERROR, SUCCESS)
+        """
+        if not NOTIFICATION_CONFIG['telegram_enabled']:
+            logger.debug("Telegram notifications are disabled")
+            return
+
+        if not self.initialized or not self.telegram_bot:
+            logger.warning("Attempting to send notification but bot not initialized")
+            await self.initialize()
+            if not self.initialized or not self.telegram_bot:
+                logger.error("Failed to initialize bot for notification")
+                return
+
+        try:
+            # Add emoji based on level
+            emoji = {
+                "INFO": "ℹ️",
+                "WARNING": "⚠️",
+                "ERROR": "❌",
+                "SUCCESS": "✅"
+            }.get(level, "ℹ️")
+
+            formatted_message = f"{emoji} {message}"
+            
+            # Send the message using synchronous method
+            self.telegram_bot.send_message(
+                chat_id=NOTIFICATION_CONFIG['telegram_chat_id'],
+                text=formatted_message
+            )
+            logger.info(f"Notification sent successfully: {message}")
+            
+        except BadRequest as e:
+            if "chat not found" in str(e).lower():
+                logger.error(
+                    f"Chat not found. Please make sure:\n"
+                    f"1. You have started a chat with the bot\n"
+                    f"2. The chat ID {NOTIFICATION_CONFIG['telegram_chat_id']} is correct\n"
+                    f"3. You have sent at least one message to the bot"
+                )
+            else:
+                logger.error(f"Failed to send notification: {e}")
+        except NetworkError as e:
+            logger.error(f"Network error sending notification: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error sending notification: {e}")
+
+    def handle_start_command(self, update: Update, context: CallbackContext):
+        """Handle the /start command"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+
+            welcome_message = (
+                "👋 Welcome to the Kraken Trading Bot!\n\n"
+                "This bot helps you manage your cryptocurrency trades on Kraken.\n\n"
+                "🔹 Main Features:\n"
+                "• Buy BTC, ETH, SOL, and USDC\n"
+                "• Check prices and balances\n"
+                "• View trading history\n"
+                "• Automated scheduled trading\n\n"
+                "📝 Quick Start:\n"
+                "1. Use /help to see all available commands\n"
+                "2. Use /price to check current prices\n"
+                "3. Use /balance to check your balances\n"
+                "4. Use /buy, /buysol, /buyeth, or /buyusdc to make trades\n\n"
+                "⚠️ Important:\n"
+                "• All trades require confirmation\n"
+                "• Minimum trade amount is 10 EUR/USDC\n"
+                "• Bot scheduling can be enabled/disabled\n\n"
+                "Need help? Use /help for detailed command information."
+            )
+            update.message.reply_text(welcome_message)
+            logger.info(f"Start command executed for chat {chat_id}")
+        except Exception as e:
+            logger.error(f"Error in start command: {e}")
+            update.message.reply_text("❌ An error occurred. Please try again.")
+
+    def handle_help_command(self, update: Update, context: CallbackContext):
+        """Handle the /help command"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+
+            help_message = (
+                "📚 Command Help\n\n"
+                "🔹 Trading Commands:\n"
+                "/buy - Buy BTC\n"
+                "• Uses available EUR or USDC balance\n"
+                "• Requires confirmation\n"
+                "• Minimum 10 EUR/USDC required\n\n"
+                "/buysol - Buy SOL\n"
+                "• Uses available EUR or USDC balance\n"
+                "• Requires confirmation\n"
+                "• Minimum 10 EUR/USDC required\n\n"
+                "/buyeth - Buy ETH\n"
+                "• Uses available EUR or USDC balance\n"
+                "• Requires confirmation\n"
+                "• Minimum 10 EUR/USDC required\n\n"
+                "/buyusdc - Buy USDC\n"
+                "• Uses EUR balance only\n"
+                "• Requires confirmation\n"
+                "• Minimum 10 EUR required\n\n"
+                "🔹 Information Commands:\n"
+                "/price - Check current prices\n"
+                "• Shows BTC, ETH, SOL prices in EUR and USDC\n"
+                "• 10-second cooldown between checks\n\n"
+                "/balance - Check your balances\n"
+                "• Shows available EUR, USDC, BTC, ETH, SOL balances\n"
+                "• Includes approximate values in EUR\n\n"
+                "/status - Full status check\n"
+                "• Shows all balances and current prices\n"
+                "• Includes bot status and scheduling state\n\n"
+                "/history - View trading history\n"
+                "• Shows recent trades and their status\n"
+                "• Includes order details and timestamps\n\n"
+                "🔹 Control Commands:\n"
+                "/enable - Enable bot scheduling\n"
+                "• Enables automatic Monday/Sunday trading\n"
+                "• Requires confirmation\n\n"
+                "/disable - Disable bot scheduling\n"
+                "• Disables automatic trading\n"
+                "• Requires confirmation\n\n"
+                "⚠️ Important Notes:\n"
+                "• All trades require /confirm within 30 seconds\n"
+                "• Minimum trade amount is 10 EUR/USDC\n"
+                "• Price checks have a 10-second cooldown\n"
+                "• Bot scheduling can be enabled/disabled\n"
+                "• All commands are logged for security"
+            )
+            update.message.reply_text(help_message)
+            logger.info(f"Help command executed for chat {chat_id}")
+        except Exception as e:
+            logger.error(f"Error in help command: {e}")
+            update.message.reply_text("❌ An error occurred. Please try again.")
+
+    def handle_price_command(self, update: Update, context: CallbackContext):
+        """Handle the /price command to check current prices"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if not self._check_command_cooldown():
+                update.message.reply_text("⏳ Please wait a moment before sending another command.")
+                return
+
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+
+            # Check price check cooldown
+            last_check = self._last_price_check.get(chat_id, 0)
+            if time.time() - last_check < self._price_check_cooldown:
+                remaining = int(self._price_check_cooldown - (time.time() - last_check))
+                update.message.reply_text(f"⏳ Please wait {remaining} seconds before checking prices again.")
+                return
+
+            self._last_price_check[chat_id] = time.time()
+
+            # Import here to avoid circular import
+            from shared import kraken
+
+            # Send initial response
+            update.message.reply_text("🔄 Fetching current prices...")
+            
+            try:
+                # Fetch current prices
+                btc_eur = kraken.fetch_ticker('BTC/EUR')['last']
+                btc_usdc = kraken.fetch_ticker('BTC/USDC')['last']
+                eth_eur = kraken.fetch_ticker('ETH/EUR')['last']
+                eth_usdc = kraken.fetch_ticker('ETH/USDC')['last']
+                sol_eur = kraken.fetch_ticker('SOL/EUR')['last']
+                sol_usdc = kraken.fetch_ticker('SOL/USDC')['last']
+                usdc_eur = kraken.fetch_ticker('USDC/EUR')['last']
+
+                price_message = (
+                    "💰 Current Prices:\n\n"
+                    f"Bitcoin (BTC):\n"
+                    f"• {btc_eur:.2f} EUR\n"
+                    f"• {btc_usdc:.2f} USDC\n\n"
+                    f"Ethereum (ETH):\n"
+                    f"• {eth_eur:.2f} EUR\n"
+                    f"• {eth_usdc:.2f} USDC\n\n"
+                    f"Solana (SOL):\n"
+                    f"• {sol_eur:.2f} EUR\n"
+                    f"• {sol_usdc:.2f} USDC\n\n"
+                    f"USDC:\n"
+                    f"• {usdc_eur:.4f} EUR\n\n"
+                    f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                update.message.reply_text(price_message)
+                logger.info(f"Price command executed successfully for chat {chat_id}")
+                
+            except Exception as e:
+                error_msg = f"❌ Error fetching prices: {str(e)}"
+                logger.error(error_msg)
+                update.message.reply_text(error_msg)
+                
+        except Exception as e:
+            logger.error(f"Error in price command: {e}")
+            update.message.reply_text("❌ An error occurred. Please try again.")
+
+    def handle_balance_command(self, update: Update, context: CallbackContext):
+        """Handle the /balance command to check balances"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if not self._check_command_cooldown():
+                update.message.reply_text("⏳ Please wait a moment before sending another command.")
+                return
+
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+
+            # Import here to avoid circular import
+            from shared import kraken
+
+            # Send initial response
+            update.message.reply_text("🔄 Fetching balances...")
+            
+            try:
+                # Fetch balances
+                balance = kraken.fetch_balance()
+                eur_balance = balance['total'].get('EUR', 0)
+                usdc_balance = balance['total'].get('USDC.F', 0)
+                btc_balance = balance['total'].get('XBT.F', 0)
+                eth_balance = balance['total'].get('ETH.F', 0)
+                sol_balance = balance['total'].get('SOL', 0)
+
+                # Get current prices for value calculation
+                btc_eur = kraken.fetch_ticker('BTC/EUR')['last']
+                eth_eur = kraken.fetch_ticker('ETH/EUR')['last']
+                sol_eur = kraken.fetch_ticker('SOL/EUR')['last']
+                usdc_eur = kraken.fetch_ticker('USDC/EUR')['last']
+
+                # Calculate EUR values
+                btc_eur_value = btc_balance * btc_eur
+                eth_eur_value = eth_balance * eth_eur
+                sol_eur_value = sol_balance * sol_eur
+                usdc_eur_value = usdc_balance * usdc_eur
+
+                balance_message = (
+                    "💰 Your Balances:\n\n"
+                    f"EUR: {eur_balance:.2f} EUR\n"
+                    f"USDC: {usdc_balance:.2f} USDC (≈ {usdc_eur_value:.2f} EUR)\n"
+                    f"BTC: {btc_balance:.8f} BTC (≈ {btc_eur_value:.2f} EUR)\n"
+                    f"ETH: {eth_balance:.8f} ETH (≈ {eth_eur_value:.2f} EUR)\n"
+                    f"SOL: {sol_balance:.8f} SOL (≈ {sol_eur_value:.2f} EUR)\n\n"
+                    f"Total Value: {(eur_balance + btc_eur_value + eth_eur_value + sol_eur_value + usdc_eur_value):.2f} EUR\n\n"
+                    f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                update.message.reply_text(balance_message)
+                logger.info(f"Balance command executed successfully for chat {chat_id}")
+                
+            except Exception as e:
+                error_msg = f"❌ Error fetching balances: {str(e)}"
+                logger.error(error_msg)
+                update.message.reply_text(error_msg)
+                
+        except Exception as e:
+            logger.error(f"Error in balance command: {e}")
+            update.message.reply_text("❌ An error occurred. Please try again.")
+
+    def handle_history_command(self, update: Update, context: CallbackContext):
+        """Handle the /history command to view trading history"""
+        chat_id = str(update.effective_chat.id)
+        try:
+            if not self._check_command_cooldown():
+                update.message.reply_text("⏳ Please wait a moment before sending another command.")
+                return
+
+            if chat_id != str(NOTIFICATION_CONFIG['telegram_chat_id']):
+                logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
+                update.message.reply_text("❌ Unauthorized access. This bot is private.")
+                return
+
+            # Import here to avoid circular import
+            from shared import kraken
+
+            # Send initial response
+            update.message.reply_text("🔄 Fetching trading history...")
+            
+            try:
+                # Fetch recent orders
+                orders = kraken.fetch_closed_orders(limit=5)  # Get last 5 closed orders
+                
+                if not orders:
+                    update.message.reply_text("📝 No recent trading history found.")
+                    return
+
+                history_message = "📝 Recent Trading History:\n\n"
+                
+                for order in orders:
+                    symbol = order['symbol']
+                    side = "Buy" if order['side'] == 'buy' else "Sell"
+                    amount = float(order['amount'])
+                    price = float(order['price'])
+                    cost = amount * price
+                    status = order['status']
+                    timestamp = datetime.fromtimestamp(order['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    history_message += (
+                        f"🔹 {side} {symbol}\n"
+                        f"• Amount: {amount:.8f}\n"
+                        f"• Price: {price:.2f}\n"
+                        f"• Total: {cost:.2f}\n"
+                        f"• Status: {status}\n"
+                        f"• Time: {timestamp}\n\n"
+                    )
+
+                history_message += f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                update.message.reply_text(history_message)
+                logger.info(f"History command executed successfully for chat {chat_id}")
+                
+            except Exception as e:
+                error_msg = f"❌ Error fetching trading history: {str(e)}"
+                logger.error(error_msg)
+                update.message.reply_text(error_msg)
+                
+        except Exception as e:
+            logger.error(f"Error in history command: {e}")
+            update.message.reply_text("❌ An error occurred. Please try again.")
+
 # Create a global notification manager instance
 notification_manager = NotificationManager()
 
@@ -709,9 +1024,10 @@ def send_test_notification():
             if notification_manager.initialized and not notification_manager._startup_notification_sent:
                 asyncio.run(notification_manager.send_notification(
                     "🔔 Bot is ready! Available commands:\n"
-                    "/buy - Trigger a manual buy order\n"
-                    "/buymin - Trigger a minimum BTC buy order\n"
-                    "/convert_eur [amount] - Convert EUR to USDC (optional amount)\n"
+                    "/buy - Trigger a manual BTC buy order\n"
+                    "/buysol - Trigger a SOL buy order\n"
+                    "/buyeth - Trigger a ETH buy order\n"
+                    "/buyusdc - Trigger a USDC buy order\n"
                     "/status - Check bot status",
                     "SUCCESS"
                 ))
