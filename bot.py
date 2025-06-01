@@ -124,7 +124,7 @@ async def get_available_balance(allow_usdc=True):
     else:
         return None, 0
 
-async def place_limit_order_btc():
+async def place_limit_order_btc(amount=None, currency=None, is_percentage=False):
     """Place a limit order to buy BTC"""
     retry_count = 0
     while retry_count < TRADING_CONFIG['max_retries']:
@@ -137,10 +137,19 @@ async def place_limit_order_btc():
             btc_balance = balance['total'].get('XBT.F', 0)
             
             # Get available balance in EUR or USDC
-            currency, available_balance = await get_available_balance()
-            if not currency:
-                log_action("Insufficient EUR or USDC balance for trading (minimum 10 required)")
-                return
+            if currency:
+                if currency == 'USDC':
+                    available_balance = balance['total'].get('USDC.F', 0)  # Use USDC.F for USDC balance
+                else:
+                    available_balance = balance['total'].get(currency, 0)
+                if available_balance < 10:  # Minimum 10 EUR/USDC required
+                    log_action(f"Insufficient {currency} balance for trading (minimum 10 required)")
+                    return
+            else:
+                currency, available_balance = await get_available_balance()
+                if not currency:
+                    log_action("Insufficient EUR or USDC balance for trading (minimum 10 required)")
+                    return
             
             # Update metrics
             metrics_manager.update_balances(available_balance, btc_balance)
@@ -150,8 +159,19 @@ async def place_limit_order_btc():
             log_action(f"Current BTC balance: {btc_balance:.8f}")
             
             # Calculate amount to use
-            amount_to_use = available_balance * TRADING_CONFIG['balance_percentage']
-            log_action(f"Planning to use {amount_to_use:.2f} {currency} ({TRADING_CONFIG['balance_percentage']*100}% of balance)")
+            if amount is not None:
+                if is_percentage:
+                    amount_to_use = available_balance * (amount / 100)
+                else:
+                    amount_to_use = amount
+            else:
+                amount_to_use = available_balance * TRADING_CONFIG['balance_percentage']
+            
+            if amount_to_use < 10:  # Minimum 10 EUR/USDC required
+                log_action(f"Calculated amount {amount_to_use:.2f} {currency} is below minimum 10 {currency}")
+                return
+                
+            log_action(f"Planning to use {amount_to_use:.2f} {currency}")
             
             # Get current order book
             symbol = f"BTC/{currency}"
@@ -263,7 +283,7 @@ def place_sunday_order():
     else:
         log_action("Monday attempt was successful, skipping Sunday fallback")
 
-async def place_limit_order_sol():
+async def place_limit_order_sol(amount=None, currency=None, is_percentage=False):
     """Place a limit order to buy SOL"""
     min_amount = 0.02  # Set your minimum SOL amount
     retry_count = 0
@@ -277,10 +297,19 @@ async def place_limit_order_sol():
             sol_balance = balance['total'].get('SOL', 0)
             
             # Get available balance in EUR or USDC
-            currency, available_balance = await get_available_balance()
-            if not currency:
-                log_action("Insufficient EUR or USDC balance for trading (minimum 10 required)")
-                return
+            if currency:
+                if currency == 'USDC':
+                    available_balance = balance['total'].get('USDC.F', 0)  # Use USDC.F for USDC balance
+                else:
+                    available_balance = balance['total'].get(currency, 0)
+                if available_balance < 10:  # Minimum 10 EUR/USDC required
+                    log_action(f"Insufficient {currency} balance for trading (minimum 10 required)")
+                    return
+            else:
+                currency, available_balance = await get_available_balance()
+                if not currency:
+                    log_action("Insufficient EUR or USDC balance for trading (minimum 10 required)")
+                    return
             
             # Update metrics
             metrics_manager.update_balances(available_balance, sol_balance)
@@ -290,8 +319,19 @@ async def place_limit_order_sol():
             log_action(f"Current SOL balance: {sol_balance:.4f}")
             
             # Calculate amount to use
-            amount_to_use = available_balance * TRADING_CONFIG['balance_percentage']
-            log_action(f"Planning to use {amount_to_use:.2f} {currency} ({TRADING_CONFIG['balance_percentage']*100}% of balance)")
+            if amount is not None:
+                if is_percentage:
+                    amount_to_use = available_balance * (amount / 100)
+                else:
+                    amount_to_use = amount
+            else:
+                amount_to_use = available_balance * TRADING_CONFIG['balance_percentage']
+            
+            if amount_to_use < 10:  # Minimum 10 EUR/USDC required
+                log_action(f"Calculated amount {amount_to_use:.2f} {currency} is below minimum 10 {currency}")
+                return
+                
+            log_action(f"Planning to use {amount_to_use:.2f} {currency}")
             
             # Get current order book
             symbol = f"SOL/{currency}"
@@ -367,7 +407,7 @@ async def place_limit_order_sol():
                 return
     log_action(f"Failed to place SOL order after {TRADING_CONFIG['max_retries']} attempts", "ERROR")
 
-async def place_limit_order_eth():
+async def place_limit_order_eth(amount=None, currency=None, is_percentage=False):
     """Place a limit order to buy ETH"""
     min_amount = 0.002  # Set your minimum ETH amount
     retry_count = 0
@@ -381,10 +421,19 @@ async def place_limit_order_eth():
             eth_balance = balance['total'].get('ETH', 0)
             
             # Get available balance in EUR or USDC
-            currency, available_balance = await get_available_balance()
-            if not currency:
-                log_action("Insufficient EUR or USDC balance for trading (minimum 10 required)")
-                return
+            if currency:
+                if currency == 'USDC':
+                    available_balance = balance['total'].get('USDC.F', 0)  # Use USDC.F for USDC balance
+                else:
+                    available_balance = balance['total'].get(currency, 0)
+                if available_balance < 10:  # Minimum 10 EUR/USDC required
+                    log_action(f"Insufficient {currency} balance for trading (minimum 10 required)")
+                    return
+            else:
+                currency, available_balance = await get_available_balance()
+                if not currency:
+                    log_action("Insufficient EUR or USDC balance for trading (minimum 10 required)")
+                    return
             
             # Update metrics
             metrics_manager.update_balances(available_balance, eth_balance)
@@ -394,8 +443,19 @@ async def place_limit_order_eth():
             log_action(f"Current ETH balance: {eth_balance:.4f}")
             
             # Calculate amount to use
-            amount_to_use = available_balance * TRADING_CONFIG['balance_percentage']
-            log_action(f"Planning to use {amount_to_use:.2f} {currency} ({TRADING_CONFIG['balance_percentage']*100}% of balance)")
+            if amount is not None:
+                if is_percentage:
+                    amount_to_use = available_balance * (amount / 100)
+                else:
+                    amount_to_use = amount
+            else:
+                amount_to_use = available_balance * TRADING_CONFIG['balance_percentage']
+            
+            if amount_to_use < 10:  # Minimum 10 EUR/USDC required
+                log_action(f"Calculated amount {amount_to_use:.2f} {currency} is below minimum 10 {currency}")
+                return
+                
+            log_action(f"Planning to use {amount_to_use:.2f} {currency}")
             
             # Get current order book
             symbol = f"ETH/{currency}"
@@ -471,7 +531,7 @@ async def place_limit_order_eth():
                 return
     log_action(f"Failed to place ETH order after {TRADING_CONFIG['max_retries']} attempts", "ERROR")
 
-async def place_limit_order_usdc():
+async def place_limit_order_usdc(amount=None, currency=None, is_percentage=False):
     """Place a limit order to buy USDC"""
     min_amount = 5  # Set your minimum USDC amount
     retry_count = 0
@@ -485,8 +545,12 @@ async def place_limit_order_usdc():
             usdc_balance = balance['total'].get('USDC.F', 0)  # Use USDC.F for balance check
             
             # Get available balance in EUR
-            currency, available_balance = await get_available_balance()
-            if not currency or currency != 'EUR':  # USDC can only be bought with EUR
+            if currency and currency != 'EUR':
+                log_action("USDC can only be bought with EUR")
+                return
+                
+            available_balance = balance['total'].get('EUR', 0)
+            if available_balance < 10:  # Minimum 10 EUR required
                 log_action("Insufficient EUR balance for trading USDC (minimum 10 required)")
                 return
             
@@ -498,8 +562,19 @@ async def place_limit_order_usdc():
             log_action(f"Current USDC balance: {usdc_balance:.2f}")
             
             # Calculate amount to use
-            amount_to_use = available_balance * TRADING_CONFIG['balance_percentage']
-            log_action(f"Planning to use {amount_to_use:.2f} EUR ({TRADING_CONFIG['balance_percentage']*100}% of balance)")
+            if amount is not None:
+                if is_percentage:
+                    amount_to_use = available_balance * (amount / 100)
+                else:
+                    amount_to_use = amount
+            else:
+                amount_to_use = available_balance * TRADING_CONFIG['balance_percentage']
+            
+            if amount_to_use < 10:  # Minimum 10 EUR required
+                log_action(f"Calculated amount {amount_to_use:.2f} EUR is below minimum 10 EUR")
+                return
+                
+            log_action(f"Planning to use {amount_to_use:.2f} EUR")
             
             # Get current order book
             symbol = 'USDC/EUR'  # USDC can only be bought with EUR

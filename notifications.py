@@ -26,7 +26,7 @@ class NotificationManager:
         self._reconnect_delay = 5  # seconds to wait before reconnecting
         self._startup_notification_sent = False  # Track if startup notification was sent
         self._loop = None  # Will be set when needed
-        self._pending_buy_confirmation = {}  # chat_id: (timestamp, command_type)
+        self._pending_buy_confirmation = {}  # chat_id: (timestamp, command_type, amount, currency, is_percentage)
         self._buy_callback = None  # Callback for buy orders
         self._scheduling_enabled = True  # Track if bot scheduling is enabled
         self._scheduling_state_callback = None  # Callback to control bot scheduling
@@ -389,6 +389,38 @@ class NotificationManager:
         else:
             return f"{diff.seconds} seconds ago"
 
+    def _parse_buy_command(self, args):
+        """Parse buy command arguments
+        Returns: (amount, currency, is_percentage) or (None, None, None) if invalid
+        """
+        if not args:
+            return None, None, None
+            
+        try:
+            # Parse amount
+            amount_str = args[0].strip()
+            is_percentage = False
+            
+            # Check if amount is a percentage
+            if amount_str.endswith('%'):
+                is_percentage = True
+                amount_str = amount_str[:-1]
+            
+            amount = float(amount_str)
+            if amount <= 0:
+                return None, None, None
+                
+            # Parse currency if provided
+            currency = None
+            if len(args) > 1:
+                currency = args[1].strip().upper()
+                if currency not in ['EUR', 'USDC']:
+                    return None, None, None
+                    
+            return amount, currency, is_percentage
+        except (ValueError, IndexError):
+            return None, None, None
+
     def handle_buy_command(self, update: Update, context: CallbackContext):
         """Handle the /buy command with confirmation"""
         chat_id = str(update.effective_chat.id)
@@ -407,13 +439,32 @@ class NotificationManager:
                 update.message.reply_text("❌ Unauthorized access. This bot is private.")
                 return
 
-            # Prompt for confirmation
-            self._pending_buy_confirmation[chat_id] = (time.time(), 'buy')
+            # Parse command arguments
+            args = context.args if context.args else []
+            amount, currency, is_percentage = self._parse_buy_command(args)
+            
+            if amount is None:
+                update.message.reply_text(
+                    "❌ Invalid command format. Use:\n"
+                    "/buy [amount] [currency]\n"
+                    "Examples:\n"
+                    "/buy 100 EUR\n"
+                    "/buy 50 USDC\n"
+                    "/buy 25% EUR"
+                )
+                return
+
+            # Store command details
+            self._pending_buy_confirmation[chat_id] = (time.time(), 'buy', amount, currency, is_percentage)
+            
+            # Format confirmation message
+            amount_str = f"{amount}%" if is_percentage else f"{amount:.2f}"
+            currency_str = f" {currency}" if currency else " available EUR/USDC"
             update.message.reply_text(
-                "⚠️ Are you sure you want to execute a buy order?\n"
+                f"⚠️ Are you sure you want to execute a buy order for {amount_str}{currency_str}?\n"
                 "Reply with /confirm within 30 seconds to proceed."
             )
-            logger.info(f"Buy confirmation requested for chat {chat_id}")
+            logger.info(f"Buy confirmation requested for chat {chat_id}: {amount_str}{currency_str}")
         except Exception as e:
             error_msg = f"❌ Error preparing buy order: {str(e)}"
             logger.error(error_msg)
@@ -437,11 +488,33 @@ class NotificationManager:
                 logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
                 update.message.reply_text("❌ Unauthorized access. This bot is private.")
                 return
-            self._pending_buy_confirmation[chat_id] = (time.time(), 'buysol')
+
+            # Parse command arguments
+            args = context.args if context.args else []
+            amount, currency, is_percentage = self._parse_buy_command(args)
+            
+            if amount is None:
+                update.message.reply_text(
+                    "❌ Invalid command format. Use:\n"
+                    "/buysol [amount] [currency]\n"
+                    "Examples:\n"
+                    "/buysol 100 EUR\n"
+                    "/buysol 50 USDC\n"
+                    "/buysol 25% EUR"
+                )
+                return
+
+            # Store command details
+            self._pending_buy_confirmation[chat_id] = (time.time(), 'buysol', amount, currency, is_percentage)
+            
+            # Format confirmation message
+            amount_str = f"{amount}%" if is_percentage else f"{amount:.2f}"
+            currency_str = f" {currency}" if currency else " available EUR/USDC"
             update.message.reply_text(
-                "⚠️ Are you sure you want to execute a SOL buy order?\nReply with /confirm within 30 seconds to proceed."
+                f"⚠️ Are you sure you want to execute a SOL buy order for {amount_str}{currency_str}?\n"
+                "Reply with /confirm within 30 seconds to proceed."
             )
-            logger.info(f"Buy SOL confirmation requested for chat {chat_id}")
+            logger.info(f"Buy SOL confirmation requested for chat {chat_id}: {amount_str}{currency_str}")
         except Exception as e:
             error_msg = f"❌ Error preparing SOL buy order: {str(e)}"
             logger.error(error_msg)
@@ -465,11 +538,33 @@ class NotificationManager:
                 logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
                 update.message.reply_text("❌ Unauthorized access. This bot is private.")
                 return
-            self._pending_buy_confirmation[chat_id] = (time.time(), 'buyeth')
+
+            # Parse command arguments
+            args = context.args if context.args else []
+            amount, currency, is_percentage = self._parse_buy_command(args)
+            
+            if amount is None:
+                update.message.reply_text(
+                    "❌ Invalid command format. Use:\n"
+                    "/buyeth [amount] [currency]\n"
+                    "Examples:\n"
+                    "/buyeth 100 EUR\n"
+                    "/buyeth 50 USDC\n"
+                    "/buyeth 25% EUR"
+                )
+                return
+
+            # Store command details
+            self._pending_buy_confirmation[chat_id] = (time.time(), 'buyeth', amount, currency, is_percentage)
+            
+            # Format confirmation message
+            amount_str = f"{amount}%" if is_percentage else f"{amount:.2f}"
+            currency_str = f" {currency}" if currency else " available EUR/USDC"
             update.message.reply_text(
-                "⚠️ Are you sure you want to execute an ETH buy order?\nReply with /confirm within 30 seconds to proceed."
+                f"⚠️ Are you sure you want to execute an ETH buy order for {amount_str}{currency_str}?\n"
+                "Reply with /confirm within 30 seconds to proceed."
             )
-            logger.info(f"Buy ETH confirmation requested for chat {chat_id}")
+            logger.info(f"Buy ETH confirmation requested for chat {chat_id}: {amount_str}{currency_str}")
         except Exception as e:
             error_msg = f"❌ Error preparing ETH buy order: {str(e)}"
             logger.error(error_msg)
@@ -493,11 +588,36 @@ class NotificationManager:
                 logger.warning(f"Unauthorized access attempt from chat ID: {chat_id}")
                 update.message.reply_text("❌ Unauthorized access. This bot is private.")
                 return
-            self._pending_buy_confirmation[chat_id] = (time.time(), 'buyusdc')
+
+            # Parse command arguments
+            args = context.args if context.args else []
+            amount, currency, is_percentage = self._parse_buy_command(args)
+            
+            if amount is None:
+                update.message.reply_text(
+                    "❌ Invalid command format. Use:\n"
+                    "/buyusdc [amount] [currency]\n"
+                    "Examples:\n"
+                    "/buyusdc 100 EUR\n"
+                    "/buyusdc 25% EUR"
+                )
+                return
+
+            # USDC can only be bought with EUR
+            if currency and currency != 'EUR':
+                update.message.reply_text("❌ USDC can only be bought with EUR")
+                return
+
+            # Store command details
+            self._pending_buy_confirmation[chat_id] = (time.time(), 'buyusdc', amount, 'EUR', is_percentage)
+            
+            # Format confirmation message
+            amount_str = f"{amount}%" if is_percentage else f"{amount:.2f}"
             update.message.reply_text(
-                "⚠️ Are you sure you want to execute a USDC buy order?\nReply with /confirm within 30 seconds to proceed."
+                f"⚠️ Are you sure you want to execute a USDC buy order for {amount_str} EUR?\n"
+                "Reply with /confirm within 30 seconds to proceed."
             )
-            logger.info(f"Buy USDC confirmation requested for chat {chat_id}")
+            logger.info(f"Buy USDC confirmation requested for chat {chat_id}: {amount_str} EUR")
         except Exception as e:
             error_msg = f"❌ Error preparing USDC buy order: {str(e)}"
             logger.error(error_msg)
@@ -515,7 +635,7 @@ class NotificationManager:
                 update.message.reply_text("❌ No pending buy order to confirm or confirmation timed out.")
                 logger.info(f"No pending buy order or confirmation timed out for chat {chat_id}")
                 return
-            ts, command_type = pending
+            ts, command_type, amount, currency, is_percentage = pending
             if (time.time() - ts) > 30:
                 update.message.reply_text("❌ Confirmation timed out. Please try again.")
                 logger.info(f"Confirmation timed out for chat {chat_id}")
@@ -539,7 +659,7 @@ class NotificationManager:
             logger.info(f"Buy confirmed by chat {chat_id}, initiating {command_type} order...")
             from shared import get_event_loop
             loop = get_event_loop()
-            asyncio.run_coroutine_threadsafe(callback(), loop)
+            asyncio.run_coroutine_threadsafe(callback(amount, currency, is_percentage), loop)
             update.message.reply_text("✅ Buy order process initiated. Check the logs for details.")
             logger.info(f"{command_type} command executed successfully")
         except Exception as e:
