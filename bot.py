@@ -224,8 +224,10 @@ async def place_limit_order_btc(amount=None, currency=None, is_percentage=False)
                 order_status = kraken.fetch_order(order['id'])
                 if order_status['status'] == 'closed':
                     log_action(f"Order {order['id']} filled successfully.", "SUCCESS")
-                    monday_attempt_successful = True
-                    save_state({'monday_attempt_successful': True})
+                    # Save the state
+                    state = load_state()
+                    state['monday_attempt_successful'] = True
+                    save_state(state)
                     metrics_manager.record_order_success(btc_amount, bid_price, time.time() - start_time)
                     return
                 else:
@@ -277,6 +279,9 @@ def place_monday_order():
 
 def place_sunday_order():
     """Fallback order attempt on Sunday"""
+    # Read the state file
+    state = load_state()
+    monday_attempt_successful = state['monday_attempt_successful']
     if not monday_attempt_successful:
         log_action("Monday attempt was not successful, running fallback attempt on Sunday")
         run_async(place_limit_order_btc())
